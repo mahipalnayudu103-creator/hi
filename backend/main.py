@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
@@ -623,6 +624,8 @@ async def ws_playback(websocket: WebSocket):
     state = {
         "is_playing": False,
         "speed": 100.0,
+        "speed_mode": "tick",   # "tick" = ticks/sec, "time" = market-time multiplier (0–100x)
+        "virtual_dt": None,     # virtual market clock for time-based playback
         "chart_pips": [],
         "reversal_boxes": 2,
         "pip_size": 0.0001,
@@ -711,6 +714,23 @@ async def ws_playback(websocket: WebSocket):
         state["global_tick_index"] += actual
         return prices, times, bids, asks, actual
 
+    TICK_TIME_FMT = "%Y-%m-%d %H:%M:%S.%f"
+    MAX_MARKET_GAP_SECONDS = 10.0  # quiet periods longer than this are skipped in time mode
+
+    def _parse_tick_ts(s: str) -> datetime:
+        try:
+            return datetime.strptime(s, TICK_TIME_FMT)
+        except ValueError:
+            return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+
+    async def peek_next_tick_time() -> Optional[str]:
+        """Return the next unconsumed tick's timestamp string without consuming it."""
+        if state["chunk_prices"] is None or state["chunk_index"] >= state["chunk_length"]:
+            has_more = await load_next_chunk_async()
+            if not has_more:
+                return None
+        return str(state["chunk_times"][state["chunk_index"]])
+
     async def get_next_tick_async() -> Optional[Tuple[float, str, float, float]]:
         batch = await get_next_tick_batch_async(1)
         if batch is None:
@@ -720,6 +740,7 @@ async def ws_playback(websocket: WebSocket):
 
     async def skip_to_target_idx(target_idx: int):
         target_idx = max(0, min(target_idx, state["total_ticks"]))
+        state["virtual_dt"] = None  # re-anchor virtual clock after any seek
         
         # Check if we can fast-forward or if we must rewind
         if target_idx < state["global_tick_index"]:
@@ -848,10 +869,46 @@ async def ws_playback(websocket: WebSocket):
                 last_frame_time = now
 
                 ticks_per_second = state["speed"]
-                tick_accumulator += delta_seconds * ticks_per_second
 
-                ticks_to_process = int(math.floor(tick_accumulator))
-                tick_accumulator -= ticks_to_process
+                if state["speed_mode"] == "time":
+                    # Time-based playback: advance a virtual market clock at
+                    # speed × real time and consume every tick whose timestamp
+                    # falls inside the elapsed market-time window.
+                    multiplier = state["speed"]
+                    if multiplier <= 0:
+                        await asyncio.sleep(FRAME_INTERVAL)
+                        continue
+
+                    next_ts_str = await peek_next_tick_time()
+                    if next_ts_str is None:
+                        # Data exhausted — force one pass so end-detection fires
+                        ticks_to_process = 1
+                    else:
+                        next_dt = _parse_tick_ts(next_ts_str)
+                        if state["virtual_dt"] is None:
+                            state["virtual_dt"] = next_dt
+                        state["virtual_dt"] += timedelta(seconds=delta_seconds * multiplier)
+
+                        if state["virtual_dt"] < next_dt:
+                            gap = (next_dt - state["virtual_dt"]).total_seconds()
+                            if gap > MAX_MARKET_GAP_SECONDS:
+                                state["virtual_dt"] = next_dt  # skip quiet period
+                            else:
+                                await asyncio.sleep(FRAME_INTERVAL)
+                                continue
+
+                        # Timestamps are fixed-width "YYYY-MM-DD HH:MM:SS.mmm"
+                        # strings, so lexicographic order == chronological order.
+                        target_str = state["virtual_dt"].strftime(TICK_TIME_FMT)[:23]
+                        idx = state["chunk_index"]
+                        ticks_to_process = int(np.searchsorted(
+                            state["chunk_times"][idx:state["chunk_length"]],
+                            target_str, side="right"
+                        ))
+                else:
+                    tick_accumulator += delta_seconds * ticks_per_second
+                    ticks_to_process = int(math.floor(tick_accumulator))
+                    tick_accumulator -= ticks_to_process
 
                 if ticks_to_process > 0:
                     batch_by_chart = {}
@@ -998,6 +1055,8 @@ async def ws_playback(websocket: WebSocket):
                     anchor = cmd.get("anchor", "floor")
                     chart_pips = list(cmd.get("chart_pips", [1.0, 2.0, 3.0, 4.0]))
                     state["speed"] = float(cmd.get("speed", 100.0))
+                    state["speed_mode"] = cmd.get("speed_mode", "tick")
+                    state["virtual_dt"] = None
                     
                     logger.info(
                         f"\n[Playback Request]\n"
@@ -1142,6 +1201,8 @@ async def ws_playback(websocket: WebSocket):
             elif action == "speed":
                 new_speed = float(cmd.get("speed", 100.0))
                 state["speed"] = new_speed
+                if "mode" in cmd:
+                    state["speed_mode"] = cmd["mode"]
                 await websocket.send_text(_fast_dumps({
                     "type": "status",
                     "status": "speed_updated",
