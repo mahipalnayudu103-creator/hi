@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="High-performance Renko tick playback dashboard with CPU+GPU concurrent processing and TradingView Lightweight Charts.">
+    <title>RenkoTerminal — High-Performance Tick Playback</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- noUiSlider CSS -->
+    <link rel="stylesheet" href="/libs/nouislider.min.css" />
+
+    <!-- Custom Stylesheet -->
+    <link rel="stylesheet" href="/src/styles.css?v=7" />
+
+    <!-- TradingView Lightweight Charts -->
+    <script src="/libs/lightweight-charts.js"></script>
+
+    <!-- noUiSlider JS -->
+    <script src="/libs/nouislider.min.js"></script>
+
+    <!-- Global Error Catcher -->
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            if (message && (message.indexOf("ResizeObserver") !== -1 || message.indexOf("Resize observer") !== -1)) {
+                return true; // Ignore benign ResizeObserver loop errors
+            }
+            const el = document.getElementById("statusText");
+            if (el) { el.textContent = "JS Error: " + message; el.className = "value error"; }
+            return false;
+        };
+    </script>
+</head>
+<body class="dark-theme">
+<div class="app-container">
+
+    <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════ -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo-area">
+                <span class="logo-icon">⚡</span>
+                <h1>RenkoTerminal</h1>
+            </div>
+            <div class="badge green" id="serverBadge">Backend Connected</div>
+        </div>
+
+        <div class="sidebar-scroll">
+
+            <!-- CSV Path -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>CSV File Path</h2></div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label for="csvPathInput">Direct Path</label>
+                        <input type="text" id="csvPathInput" value="C:\cTraderData\EURUSD_Ticks_2026_Jun01_Jun07.csv" placeholder="C:/path/to/ticks.csv" class="form-control font-mono" />
+                    </div>
+                    <button id="loadMetadataBtn" class="btn btn-primary btn-block">Load CSV Metadata</button>
+                </div>
+            </section>
+
+            <!-- Date Range -->
+            <section class="sidebar-card hidden" id="rangeCard">
+                <div class="card-header"><h2>Date Range Slider</h2></div>
+                <div class="card-body">
+                    <div id="dateRangeSlider" class="range-slider"></div>
+                    <div class="selected-range-info mt-4">
+                        <span class="label">Selected UTC range:</span>
+                        <div id="selectedRangeText" class="value text-highlight">No Range Selected</div>
+                    </div>
+                    <div class="form-group mt-4">
+                        <label for="processingEngineSelect">Processing Engine</label>
+                        <select id="processingEngineSelect" class="form-control">
+                            <option value="auto">Auto (GPU → CPU fallback)</option>
+                            <option value="cpu">CPU Only (Polars / DuckDB)</option>
+                            <option value="gpu">GPU Only (cuDF / CuPy)</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Renko Parameters -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Renko Parameters</h2></div>
+                <div class="card-body grid-col-2">
+                    <div class="form-group">
+                        <label for="chart1Pips">Chart 1 Pips</label>
+                        <input type="number" id="chart1Pips" value="1" step="0.1" class="form-control" />
+                    </div>
+                    <div class="form-group">
+                        <label for="chart2Pips">Chart 2 Pips</label>
+                        <input type="number" id="chart2Pips" value="2" step="0.1" class="form-control" />
+                    </div>
+                    <div class="form-group">
+                        <label for="chart3Pips">Chart 3 Pips</label>
+                        <input type="number" id="chart3Pips" value="3" step="0.1" class="form-control" />
+                    </div>
+                    <div class="form-group">
+                        <label for="chart4Pips">Chart 4 Pips</label>
+                        <input type="number" id="chart4Pips" value="4" step="0.1" class="form-control" />
+                    </div>
+                    <div class="form-group span-2">
+                        <label for="priceSourceSelect">Price Source</label>
+                        <select id="priceSourceSelect" class="form-control">
+                            <option value="Bid">Bid</option>
+                            <option value="Ask">Ask</option>
+                            <option value="Mid">Mid (Bid+Ask)/2</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="reversalBoxes">Reversal Boxes</label>
+                        <input type="number" id="reversalBoxes" value="2" min="1" class="form-control" />
+                    </div>
+                    <div class="form-group">
+                        <label for="pipSize">Pip Size</label>
+                        <input type="number" id="pipSize" value="0.0001" step="0.00001" class="form-control" />
+                    </div>
+                    <div class="form-group span-2">
+                        <label for="anchorModeSelect">Anchor Mode</label>
+                        <select id="anchorModeSelect" class="form-control">
+                            <option value="floor">Floor</option>
+                            <option value="round">Round</option>
+                            <option value="first">First</option>
+                        </select>
+                    </div>
+                    <div class="form-group span-2">
+                        <label for="chunkSizeMb">Chunk Size (MB)</label>
+                        <input type="number" id="chunkSizeMb" value="64" min="8" max="512" step="8" class="form-control" />
+                    </div>
+                    <button id="buildRenkoBtn" class="btn btn-purple btn-block span-2 mt-2">🔨 Build Renko Charts</button>
+                </div>
+            </section>
+
+            <!-- Playback Controller -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Playback Loop</h2></div>
+                <div class="card-body">
+                    <div class="playback-controls">
+                        <button id="playBtn" class="btn-icon" title="Play">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        </button>
+                        <button id="pauseBtn" class="btn-icon" title="Pause">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                        </button>
+                        <button id="stepBtn" class="btn-icon" title="Step">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                        </button>
+                        <button id="resetBtn" class="btn-icon" title="Reset">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><polyline points="3 3 3 8 8 8"></polyline></svg>
+                        </button>
+                    </div>
+
+                    <div class="form-group mt-3">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <label for="playbackSpeed" style="margin-bottom: 0;">Playback Speed (Ticks/Sec)</label>
+                            <span id="playbackSpeedValue" class="badge" style="background: var(--purple-color); padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 0.75rem;">100/s</span>
+                        </div>
+                        <input type="range" id="playbackSpeed" min="0" max="15" step="1" value="9" class="form-control" style="width: 100%; height: 6px; border-radius: 3px; accent-color: var(--purple-color); margin-top: 0.5rem; cursor: pointer; padding: 0;" />
+                    </div>
+
+                    <div class="form-group mt-3">
+                        <label for="playbackMode">Playback Mode</label>
+                        <select id="playbackMode" class="form-control">
+                            <option value="websocket">Backend WebSocket Loop</option>
+                            <option value="local">Frontend Worker Loop (RAF)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group mt-3" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label for="syncChartsCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">Synchronize Charts</label>
+                        <input type="checkbox" id="syncChartsCheckbox" checked style="width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--purple-color);" />
+                    </div>
+                </div>
+            </section>
+
+            <!-- Layout & Themes -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Layout & Themes</h2></div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label>Layout Grid Mode</label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                            <button id="layout2x2Btn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">2x2 Grid</button>
+                            <button id="layoutStackBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Vertical Stack</button>
+                            <button id="layoutFocusBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Focus Active</button>
+                            <button id="layoutRestoreBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Restore</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="themeSwitcher">Theme Style</label>
+                        <select id="themeSwitcher" class="form-control">
+                            <option value="dark-theme" selected>Default Dark</option>
+                            <option value="light-theme">Light Mode</option>
+                            <option value="tradingview-dark">TradingView Dark</option>
+                            <option value="ctrader-dark">cTrader Dark</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Jump & Step Controls -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Jump & Step</h2></div>
+                <div class="card-body">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                        <button id="jumpStartBtn" class="btn btn-purple" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">⏮️ Jump Start</button>
+                        <button id="jumpEndBtn" class="btn btn-purple" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">⏭️ Jump End</button>
+                    </div>
+                    <div class="form-group mt-2">
+                        <label for="jumpTimeInput">Jump to UTC Time</label>
+                        <div style="display: flex; gap: 0.25rem;">
+                            <input type="text" id="jumpTimeInput" placeholder="YYYY-MM-DD HH:MM:SS" class="form-control font-mono" style="flex: 1; font-size: 0.75rem; padding: 0.35rem 0.5rem;" />
+                            <button id="jumpTimeBtn" class="btn btn-primary" style="padding: 0.35rem 0.6rem; font-size: 0.75rem;">Go</button>
+                        </div>
+                    </div>
+                    <div class="form-group mt-2">
+                        <label>Ticks Step Controls</label>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.2rem;">
+                            <button id="step1Btn" class="btn btn-icon" title="Step 1 Tick" style="font-size: 0.7rem; padding: 0.35rem 0;">+1</button>
+                            <button id="step10Btn" class="btn btn-icon" title="Step 10 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+10</button>
+                            <button id="step100Btn" class="btn btn-icon" title="Step 100 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+100</button>
+                            <button id="step1000Btn" class="btn btn-icon" title="Step 1000 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+1k</button>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.2rem; margin-top: 0.2rem;">
+                            <button id="stepBack1Btn" class="btn btn-icon" title="Step Back 1 Tick" style="font-size: 0.7rem; padding: 0.35rem 0;">-1</button>
+                            <button id="stepBack10Btn" class="btn btn-icon" title="Step Back 10 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-10</button>
+                            <button id="stepBack100Btn" class="btn btn-icon" title="Step Back 100 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-100</button>
+                            <button id="stepBack1000Btn" class="btn btn-icon" title="Step Back 1000 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-1k</button>
+                        </div>
+                    </div>
+                    <div class="form-group mt-2" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label for="autoScrollCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Auto-scroll to latest</label>
+                        <input type="checkbox" id="autoScrollCheckbox" checked style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chart & Build Modes -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Chart & Build Modes</h2></div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label for="buildModeSelect">Build Mode</label>
+                        <select id="buildModeSelect" class="form-control">
+                            <option value="full" selected>Full Selected Range</option>
+                            <option value="preview">Preview (First 50k ticks)</option>
+                            <option value="cache_only">Cache Only (Background)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="chartDataMode">Chart Data Mode</label>
+                        <select id="chartDataMode" class="form-control">
+                            <option value="forming" selected>Confirmed + Forming Brick</option>
+                            <option value="confirmed">Confirmed Bricks Only</option>
+                        </select>
+                    </div>
+                    <div class="form-group mt-2" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label for="dateSeparatorsCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Show Date Separators</label>
+                        <input type="checkbox" id="dateSeparatorsCheckbox" style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
+                    </div>
+                    <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label for="reversalMarkersCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Reversal Markers</label>
+                        <input type="checkbox" id="reversalMarkersCheckbox" checked style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
+                    </div>
+                    <div class="form-group">
+                        <label for="precisionOverride">Precision Override</label>
+                        <select id="precisionOverride" class="form-control">
+                            <option value="auto" selected>Auto-detect from file</option>
+                            <option value="2">2 decimals (XAU, BTC)</option>
+                            <option value="3">3 decimals (JPY pairs)</option>
+                            <option value="5">5 decimals (EUR, GBP)</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cache & Export -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>Cache & Export</h2></div>
+                <div class="card-body">
+                    <button id="clearCacheBtn" class="btn btn-purple btn-block" style="font-size: 0.75rem; padding: 0.4rem 0.8rem;">🧹 Clear Backend Cache</button>
+                    <div class="form-group mt-2">
+                        <label>Export Tools</label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                            <button id="exportPngBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Export PNG</button>
+                            <button id="exportCsvBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Export CSV</button>
+                            <button id="exportSettingsBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem; grid-column: span 2;">Export Preset JSON</button>
+                        </div>
+                    </div>
+                    <div class="form-group mt-2">
+                        <label for="presetImportFile">Import Preset</label>
+                        <input type="file" id="presetImportFile" class="form-control" style="font-size: 0.7rem; padding: 0.25rem 0.5rem;" accept=".json" />
+                    </div>
+                </div>
+            </section>
+
+        </div><!-- /sidebar-scroll -->
+    </aside>
+
+    <!-- ═══ MAIN DASHBOARD ═════════════════════════════════════════════════ -->
+    <main class="dashboard-viewport">
+
+        <!-- Top Status Panel -->
+        <header class="status-panel">
+            <div class="status-item">
+                <span class="label">Status:</span>
+                <span id="statusText" class="value warning">Waiting for CSV…</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Engine:</span>
+                <span id="dataEngineStatus" class="value text-highlight">—</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Ticks:</span>
+                <span id="ticksLoadedText" class="value">—</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Bricks:</span>
+                <span id="bricksBuiltText" class="value">—</span>
+            </div>
+            <div class="status-item flex-right">
+                <div class="tooltip-box hidden" id="hoverTooltip">
+                    <span class="tooltip-time" id="tooltipConfirmTime">Time: —</span>
+                    <span class="tooltip-info" id="tooltipTickCount">Ticks: —</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- ═══ CPU/GPU MONITOR BAR ════════════════════════════════════════ -->
+        <div class="monitor-bar" id="monitorBar">
+            <!-- CPU -->
+            <div class="monitor-card" id="cpuCard">
+                <div class="monitor-label">CPU</div>
+                <div class="monitor-gauge-wrap">
+                    <div class="monitor-gauge" id="cpuGauge">
+                        <div class="gauge-fill cpu" id="cpuGaugeFill" style="width:0%"></div>
+                    </div>
+                    <span class="monitor-value" id="cpuPct">—%</span>
+                </div>
+                <div class="monitor-sub" id="cpuCores">— cores</div>
+            </div>
+            <!-- RAM -->
+            <div class="monitor-card" id="ramCard">
+                <div class="monitor-label">RAM</div>
+                <div class="monitor-gauge-wrap">
+                    <div class="monitor-gauge" id="ramGauge">
+                        <div class="gauge-fill ram" id="ramGaugeFill" style="width:0%"></div>
+                    </div>
+                    <span class="monitor-value" id="ramGb">— GB</span>
+                </div>
+                <div class="monitor-sub" id="ramTotal">— GB total</div>
+            </div>
+            <!-- GPU -->
+            <div class="monitor-card" id="gpuCard">
+                <div class="monitor-label">GPU</div>
+                <div class="monitor-gauge-wrap">
+                    <div class="monitor-gauge">
+                        <div class="gauge-fill gpu" id="gpuGaugeFill" style="width:0%"></div>
+                    </div>
+                    <span class="monitor-value" id="gpuPct">—%</span>
+                </div>
+                <div class="monitor-sub" id="gpuName">No GPU</div>
+            </div>
+            <!-- VRAM -->
+            <div class="monitor-card" id="vramCard">
+                <div class="monitor-label">VRAM</div>
+                <div class="monitor-gauge-wrap">
+                    <div class="monitor-gauge">
+                        <div class="gauge-fill vram" id="vramGaugeFill" style="width:0%"></div>
+                    </div>
+                    <span class="monitor-value" id="vramGb">— GB</span>
+                </div>
+                <div class="monitor-sub" id="vramTotal">— GB total</div>
+            </div>
+            <!-- Pipeline Stage -->
+            <div class="monitor-card pipeline-card">
+                <div class="monitor-label">Pipeline</div>
+                <div class="pipeline-stages">
+                    <div class="pipe-stage" id="pipeRead">📂 Read</div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-stage" id="pipeProc">⚙️ Process</div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-stage" id="pipeRenko">📊 Renko</div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-stage" id="pipeCache">💾 Cache</div>
+                </div>
+                <div class="monitor-sub" id="pipelineEngine">—</div>
+            </div>
+        </div>
+
+        <!-- Build Progress Bar -->
+        <div class="progress-section hidden" id="progressSection">
+            <div class="progress-header">
+                <span class="progress-label" id="progressLabel">Building Renko…</span>
+                <span class="progress-pct" id="progressPct">0%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progressFill" style="width:0%"></div>
+            </div>
+            <div class="progress-stats">
+                <span id="progressTicks">Ticks: —</span>
+                <span id="progressBricks">Bricks: —</span>
+                <span id="progressRows">Rows scanned: —</span>
+            </div>
+        </div>
+
+        <!-- Metadata Board -->
+        <div id="metadataInfoBoard" class="metadata-board hidden">
+            <div class="board-grid">
+                <div class="board-item"><span class="label">Rows (est.)</span><span id="metaRows" class="val">—</span></div>
+                <div class="board-item"><span class="label">File Size</span><span id="metaSize" class="val">—</span></div>
+                <div class="board-item"><span class="label">File Start UTC</span><span id="metaStart" class="val">—</span></div>
+                <div class="board-item"><span class="label">File End UTC</span><span id="metaEnd" class="val">—</span></div>
+                <div class="board-item"><span class="label">Delimiter</span><span id="metaDelim" class="val">—</span></div>
+                <div class="board-item"><span class="label">Pip Size</span><span id="metaPip" class="val">—</span></div>
+            </div>
+        </div>
+
+        <!-- Charts Grid (2×2) -->
+        <div class="charts-grid" id="chartsGrid">
+            <div class="chart-wrapper" id="chartWrapper1" data-index="1">
+                <div class="chart-title-bar">
+                    <span class="title" id="chart1Title">Chart 1 (1.0 Pip)</span>
+                    <span class="legend" id="chart1Legend">O: — H: — L: — C: —</span>
+                </div>
+                <div id="chart1Container" class="chart-container"></div>
+            </div>
+            <div class="chart-wrapper" id="chartWrapper2" data-index="2">
+                <div class="chart-title-bar">
+                    <span class="title" id="chart2Title">Chart 2 (2.0 Pips)</span>
+                    <span class="legend" id="chart2Legend">O: — H: — L: — C: —</span>
+                </div>
+                <div id="chart2Container" class="chart-container"></div>
+            </div>
+            <div class="chart-wrapper" id="chartWrapper3" data-index="3">
+                <div class="chart-title-bar">
+                    <span class="title" id="chart3Title">Chart 3 (3.0 Pips)</span>
+                    <span class="legend" id="chart3Legend">O: — H: — L: — C: —</span>
+                </div>
+                <div id="chart3Container" class="chart-container"></div>
+            </div>
+            <div class="chart-wrapper" id="chartWrapper4" data-index="4">
+                <div class="chart-title-bar">
+                    <span class="title" id="chart4Title">Chart 4 (4.0 Pips)</span>
+                    <span class="legend" id="chart4Legend">O: — H: — L: — C: —</span>
+                </div>
+                <div id="chart4Container" class="chart-container"></div>
+            </div>
+        </div>
+
+        <!-- Live Terminal Console -->
+        <footer class="system-console">
+            <div class="console-header">
+                <span class="console-title">🖥️ LIVE TERMINAL CONSOLE</span>
+                <div class="console-actions">
+                    <span id="consoleJobId" class="console-job-id"></span>
+                    <button id="clearConsoleBtn" class="btn-clear-console">Clear</button>
+                </div>
+            </div>
+            <div id="consoleLogOutput" class="console-log-output">
+                <div class="log-line system"><span class="time">[00:00:00]</span> [SYSTEM] Terminal initialized. Ready for operations.</div>
+            </div>
+        </footer>
+    </main>
+
+    <!-- Collapsible Right Sidebar for Live Cursor Data & Playback Metrics -->
+    <aside class="sidebar-right" id="sidebarRight">
+        <div class="sidebar-right-header">
+            <h2>📈 Data & Metrics</h2>
+            <button id="toggleRightSidebarBtn" class="btn-toggle-right" title="Toggle Sidebar">➡️</button>
+        </div>
+        <div class="sidebar-right-scroll">
+            
+            <!-- Active Chart Highlight Card -->
+            <section class="right-card">
+                <div class="card-header">Active Chart Highlight</div>
+                <div class="active-chart-details" id="activeChartHighlightDetails">
+                    <div class="active-title" id="activeChartTitleValue">Active Chart: None</div>
+                    <div class="active-sub" id="activeChartPipValue">Pip Size: —</div>
+                </div>
+            </section>
+
+            <!-- Linked Cursor Data Panel -->
+            <section class="right-card">
+                <div class="card-header">Cursor Data Window</div>
+                <div class="data-grid">
+                    <div class="data-row"><span class="label">Active Chart</span><span class="val" id="cursorChart">—</span></div>
+                    <div class="data-row"><span class="label">Brick Index</span><span class="val" id="cursorIndex">—</span></div>
+                    <div class="data-row"><span class="label">Confirm Time (UTC)</span><span class="val font-mono" id="cursorTime" style="font-size: 0.75rem;">—</span></div>
+                    <div class="data-row"><span class="label">Open</span><span class="val" id="cursorOpen">—</span></div>
+                    <div class="data-row"><span class="label">High</span><span class="val" id="cursorHigh">—</span></div>
+                    <div class="data-row"><span class="label">Low</span><span class="val" id="cursorLow">—</span></div>
+                    <div class="data-row"><span class="label">Close</span><span class="val" id="cursorClose">—</span></div>
+                    <div class="data-row"><span class="label">Direction</span><span class="val" id="cursorDirection">—</span></div>
+                    <div class="data-row"><span class="label">Tick Count</span><span class="val" id="cursorTickCount">—</span></div>
+                    <div class="data-row"><span class="label">Brick Size</span><span class="val" id="cursorBrickSize">—</span></div>
+                    <div class="data-row"><span class="label">Price Source</span><span class="val" id="cursorSource">—</span></div>
+                    <div class="data-row"><span class="label">Spread (Pips)</span><span class="val" id="cursorSpread">—</span></div>
+                </div>
+            </section>
+
+            <!-- Playback Metrics Panel -->
+            <section class="right-card">
+                <div class="card-header">Playback Metrics</div>
+                <div class="data-grid">
+                    <div class="data-row"><span class="label">Speed Set</span><span class="val" id="metricsSpeedSet">— ticks/s</span></div>
+                    <div class="data-row"><span class="label">Actual Speed</span><span class="val" id="metricsActualSpeed">— ticks/s</span></div>
+                    <div class="data-row"><span class="label">Progress</span><span class="val" id="metricsProgress">0%</span></div>
+                    <div class="data-row"><span class="label">Ticks Processed</span><span class="val" id="metricsProcessed">—</span></div>
+                    <div class="data-row"><span class="label">Ticks Remaining</span><span class="val" id="metricsRemaining">—</span></div>
+                    <div class="data-row"><span class="label">Formed Bricks</span><span class="val font-mono" id="metricsFormedBricks" style="font-size: 0.7rem; white-space: pre-wrap; line-height:1.2;">—</span></div>
+                    <div class="data-row"><span class="label">Current UTC</span><span class="val font-mono" id="metricsCurrentUtc" style="font-size: 0.75rem;">—</span></div>
+                    <div class="data-row"><span class="label">Latest Price</span><span class="val" id="metricsLatestPrice">—</span></div>
+                </div>
+            </section>
+
+            <!-- Measure Tool (Ruler) -->
+            <section class="right-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight:600; font-size:0.75rem;">Measure Tool</span>
+                    <button id="toggleMeasureBtn" class="btn btn-purple" style="font-size: 0.65rem; padding: 0.2rem 0.4rem;">Enable</button>
+                </div>
+                <div class="measure-details" id="measureDetailsBox" style="margin-top:0.4rem;">
+                    <div class="active-sub" id="measureStartValue" style="font-size:0.75rem;">Start: click a brick</div>
+                    <div class="active-sub" id="measureEndValue" style="font-size:0.75rem; margin-top:0.2rem;">End: click a brick</div>
+                    <div class="measure-result hidden" id="measureResultOutput" style="margin-top:0.4rem; border-top:1px dashed var(--border-color); padding-top:0.4rem;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-top:0.2rem;"><span style="color:var(--text-secondary);">Move:</span><span id="measureMove" style="font-weight:600; color:var(--primary-color);">—</span></div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-top:0.2rem;"><span style="color:var(--text-secondary);">Bricks:</span><span id="measureBricks" style="font-weight:600;">—</span></div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-top:0.2rem;"><span style="color:var(--text-secondary);">Ticks:</span><span id="measureTicks" style="font-weight:600;">—</span></div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-top:0.2rem;"><span style="color:var(--text-secondary);">Time:</span><span id="measureTime" style="font-weight:600;">—</span></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Playback Debug Panel -->
+            <section class="right-card" id="debugCard">
+                <div class="card-header">Playback Debug Panel</div>
+                <div class="data-grid">
+                    <div class="data-row"><span class="label">Selected range</span><span class="val" id="dbSelectedRange" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Frontend start</span><span class="val font-mono" id="dbFeStart" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Frontend end</span><span class="val font-mono" id="dbFeEnd" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Backend req start</span><span class="val font-mono" id="dbBeReqStart" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Backend req end</span><span class="val font-mono" id="dbBeReqEnd" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Loaded first tick</span><span class="val font-mono" id="dbFirstTick" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Loaded last tick</span><span class="val font-mono" id="dbLastTick" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                    <div class="data-row"><span class="label">Loaded tick count</span><span class="val" id="dbTickCount">—</span></div>
+                    <div class="data-row"><span class="label">Current tick time</span><span class="val font-mono" id="dbCurrentTickTime" style="font-size:0.65rem; word-break:break-all;">—</span></div>
+                </div>
+            </section>
+        </div>
+    </aside>
+</div>
+
+<!-- Scripts -->
+<script src="/src/api.js?v=7"></script>
+<script src="/src/charts.js?v=7"></script>
+<script src="/src/main.js?v=7"></script>
+</body>
+</html>

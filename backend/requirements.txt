@@ -1,0 +1,22 @@
+# ─── Core API & Server ───────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+
+# ─── Fast Serialization ───────────────────────────────────────────────────────
+orjson>=3.10.0          # 10-50x faster than stdlib json
+msgspec>=0.18.0         # Ultra-fast struct serialization + schema validation
+
+# ─── Data Engines (CPU) ───────────────────────────────────────────────────────
+polars>=0.20.0          # Primary: fast lazy CSV scanning & filtering
+duckdb>=0.10.0          # Fallback: SQL-style CSV querying
+pyarrow>=16.0.0         # Arrow IPC / Parquet caching layer
+numpy>=1.26.0           # Numeric arrays
+numba>=0.59.0           # CPU JIT Renko calculation (releases GIL)
+pandas>=2.2.0           # Last-resort pandas fallback
+
+# ─── Optional GPU (NVIDIA CUDA only) ─────────────────────────────────────────
+# cudf-cu12              # GPU DataFrame (requires CUDA 12)
+# cupy-cuda12x           # GPU numeric arrays  (requires CUDA 12)
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+msgspec>=0.18.0
