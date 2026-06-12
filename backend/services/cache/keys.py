@@ -1,18 +1,14 @@
 """
-cache.py  —  High-performance Renko brick cache using PyArrow Parquet.
-
-Strategy
---------
-* Each unique (csv, range, params) combination maps to a SHA-256 key.
-* Bricks are stored as Parquet files via PyArrow (columnar, compressed).
-* Parquet is 5-20x smaller than pickle and reads back via memory-mapped I/O.
-* Fallback to msgspec MessagePack if PyArrow is unavailable.
+keys.py  —  Stable SHA-256 cache key generation and general cache store helpers.
 """
 
 import hashlib
+import json
 import logging
+import pickle
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
 from config import CACHE_DIR
 
 logger = logging.getLogger("renko_playback.cache")
@@ -173,7 +169,8 @@ def _msgpack_save(path: Path, data: dict):
     import msgspec.msgpack
     path.write_bytes(msgspec.msgpack.encode(data))
 
-def _msgpack_load(path: Path) -> dict | None:
+
+def _msgpack_load(path: Path) -> Optional[dict]:
     import msgspec.msgpack
     try:
         raw = path.read_bytes()
@@ -182,9 +179,9 @@ def _msgpack_load(path: Path) -> dict | None:
         return None
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+# ─── Public Caching API ───────────────────────────────────────────────────────
 
-def check_cache(key: str) -> Dict[str, Any] | None:
+def check_cache(key: str) -> Optional[Dict[str, Any]]:
     """
     Return cached result dict or None.
     Tries Parquet first, then msgspec msgpack, then legacy pickle.
@@ -197,7 +194,7 @@ def check_cache(key: str) -> Dict[str, Any] | None:
 
     if parquet_file.exists() and meta_file.exists():
         try:
-            # 1. Try Polars (ultra-fast Rust multi-threaded memory-mapped read)
+            # Try Polars first
             try:
                 import polars as pl
                 df = pl.read_parquet(str(parquet_file))
@@ -246,8 +243,7 @@ def check_cache(key: str) -> Dict[str, Any] | None:
             except Exception:
                 pass
 
-    # 3. Legacy pickle fallback (migrate on read)
-    import pickle
+    # 3. Legacy pickle fallback
     pkl_file = CACHE_DIR / f"{key}.pkl"
     if pkl_file.exists():
         try:
@@ -325,7 +321,7 @@ def list_cache_entries() -> List[Dict[str, Any]]:
     entries   = []
     for f in sorted(CACHE_DIR.iterdir()):
         key = f.name.split(".")[0]
-        if key in seen_keys:
+        if key in seen_keys or len(key) != 64:  # SHA-256 keys are 64 hex chars
             continue
         seen_keys.add(key)
         size = sum(

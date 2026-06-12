@@ -160,7 +160,7 @@ def record_build(
         )
         conn.commit()
         conn.close()
-        logger.info(f"Build history recorded: {cache_key[:16]}…")
+        logger.info(f"Appended build to history: {cache_key[:16]}…")
     except Exception as exc:
         logger.warning(f"Failed to record build history: {exc}")
 
@@ -322,4 +322,3 @@ def lookup_sub_range(
     except Exception as exc:
         logger.warning(f"lookup_sub_range failed: {exc}")
         return None
-

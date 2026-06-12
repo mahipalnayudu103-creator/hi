@@ -13,11 +13,11 @@ class TestSmoke(unittest.TestCase):
         try:
             import app
             import config
-            from routes.api import router
-            from services.pipeline import run_build_pipeline
-            from utils.csv_reader import resolve_csv_path
+            from routes.health import router as health_router
+            from services.jobs.pipeline import run_build_pipeline
+            from services.csv.metadata import resolve_csv_path
             self.assertIsNotNone(app.app)
-            self.assertIsNotNone(router)
+            self.assertIsNotNone(health_router)
         except Exception as e:
             self.fail(f"Failed to import backend modules: {e}")
 

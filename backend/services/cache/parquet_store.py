@@ -1,20 +1,11 @@
 """
-parquet_cache.py — Incremental Parquet writer for confirmed Renko bricks.
+parquet_store.py — Incremental Parquet writer for confirmed Renko bricks.
 
 Architecture:
   - One Parquet file per (job_id, pip_value)
   - Bricks are flushed in batches (BRICK_WRITE_BATCH_SIZE) to avoid RAM build-up
   - PyArrow ParquetWriter is kept open during build, closed at end
   - read_window() enables lazy frontend loading without reading full file
-
-Cache layout:
-  cache_store/
-    <job_id>/
-      renko_1.0pip.parquet
-      renko_2.0pip.parquet
-      renko_3.0pip.parquet
-      renko_4.0pip.parquet
-      job_meta.json
 """
 
 import json
@@ -27,10 +18,8 @@ from config import CACHE_DIR, BRICK_BATCH_SIZE
 
 logger = logging.getLogger("renko_playback.parquet_cache")
 
-# ── Config ────────────────────────────────────────────────────────────────────
 BRICK_WRITE_BATCH_SIZE: int = BRICK_BATCH_SIZE
 
-# ── PyArrow ───────────────────────────────────────────────────────────────────
 try:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -40,8 +29,6 @@ except ImportError:
     _ARROW_OK = False
     logger.warning("pyarrow not available — Parquet caching disabled.")
 
-
-# ── Schema ────────────────────────────────────────────────────────────────────
 _BRICK_SCHEMA = (
     pa.schema([
         ("time",               pa.int64()),
@@ -64,13 +51,6 @@ _BRICK_SCHEMA = (
 class RenkoParquetWriter:
     """
     Manages per-pip Parquet writers for one build job.
-
-    Usage:
-        writer = RenkoParquetWriter(job_id, [1.0, 2.0, 3.0, 4.0])
-        writer.write_batch("1.0", bricks_list)
-        writer.flush_all(remaining_buffers)
-        writer.close_all()
-        writer.write_meta({"rows_scanned": ...})
     """
 
     def __init__(self, job_id: str, chart_pips: List[float]) -> None:
@@ -79,7 +59,7 @@ class RenkoParquetWriter:
         self.job_dir     = CACHE_DIR / job_id
         self.job_dir.mkdir(parents=True, exist_ok=True)
 
-        self._writers: Dict[str, Any]   = {}   # pip_str → pq.ParquetWriter
+        self._writers: Dict[str, Any]   = {}
         self._brick_counts: Dict[str, int] = {str(p): 0 for p in chart_pips}
 
         if _ARROW_OK:
@@ -92,8 +72,6 @@ class RenkoParquetWriter:
                     )
                 except Exception as exc:
                     logger.error(f"Failed to open ParquetWriter for pip {pip}: {exc}")
-
-    # ── Write helpers ──────────────────────────────────────────────────────────
 
     def write_batch(self, pip_str: str, bricks: List[Dict[str, Any]]) -> None:
         """Append a batch of confirmed brick dicts to the Parquet file for pip_str."""
@@ -156,14 +134,10 @@ class RenkoParquetWriter:
     def brick_counts(self) -> Dict[str, int]:
         return dict(self._brick_counts)
 
-    # ── Path helpers ───────────────────────────────────────────────────────────
-
     def _parquet_path(self, pip_str: str) -> Path:
         safe = pip_str.replace(".", "_")
         return self.job_dir / f"renko_{safe}pip.parquet"
 
-
-# ── Read helpers (for frontend lazy-load) ─────────────────────────────────────
 
 def read_window(
     job_id:    str,
@@ -172,18 +146,12 @@ def read_window(
     to_x:      Optional[int] = None,
     max_bricks: int = 1_000_000_000,
 ) -> List[Dict[str, Any]]:
-    """
-    Read a window of bricks from Parquet for lazy frontend loading.
-
-    from_x / to_x are brick `time` values (tick_index * 1000 + seq).
-    If both are None, returns the last max_bricks rows.
-    """
+    """Read a window of bricks from Parquet for lazy frontend loading."""
     safe     = pip_str.replace(".", "_")
     path     = CACHE_DIR / job_id / f"renko_{safe}pip.parquet"
     if not path.exists():
         return []
 
-    # 1. Primary path: Use Polars for ultra-fast multi-threaded memory-mapped reading & C++ filtering
     try:
         import polars as pl
         lf = pl.scan_parquet(str(path))
@@ -200,7 +168,6 @@ def read_window(
     except Exception as pl_exc:
         logger.info(f"Polars read_window failed/unavailable: {pl_exc}. Falling back to PyArrow...")
 
-    # 2. Fallback path: Use PyArrow with memory mapping enabled
     if not _ARROW_OK:
         return []
 
@@ -220,7 +187,6 @@ def read_window(
             if indices:
                 table = table.take(indices)
 
-        # Cap to max_bricks (take the last N)
         if table.num_rows > max_bricks:
             table = table.slice(table.num_rows - max_bricks, max_bricks)
 
@@ -237,7 +203,6 @@ def read_last_n_bricks(
     pip_str: str,
     n: int = 1_000_000_000,
 ) -> List[Dict[str, Any]]:
-    """Return the last N confirmed bricks for initial chart render."""
     return read_window(job_id, pip_str, max_bricks=n)
 
 
@@ -246,7 +211,6 @@ def read_legacy_pip_cache_window(
     pip_str: str,
     max_bricks: int = 20_000,
 ) -> List[Dict[str, Any]]:
-    """Read the last N bricks from the flat per-pip cache without loading the full file."""
     path = _legacy_parquet_path(cache_key, float(pip_str))
     if not path.exists():
         return []
@@ -276,7 +240,6 @@ def read_legacy_pip_cache_window(
 
 
 def get_job_meta(job_id: str) -> Optional[Dict[str, Any]]:
-    """Read job_meta.json for a completed build."""
     meta_path = CACHE_DIR / job_id / "job_meta.json"
     if not meta_path.exists():
         return None
@@ -287,22 +250,18 @@ def get_job_meta(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def list_cached_jobs() -> List[str]:
-    """List all job IDs with cached data."""
     if not CACHE_DIR.exists():
         return []
     return [d.name for d in CACHE_DIR.iterdir() if d.is_dir()]
 
 
 def delete_job_cache(job_id: str) -> None:
-    """Delete all cached files for a job."""
     import shutil
     job_dir = CACHE_DIR / job_id
     if job_dir.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
         logger.info(f"Deleted cache for job {job_id}")
 
-
-# ── Legacy cache helpers (kept for backward compat with existing cache_store) ──
 
 def _legacy_parquet_path(cache_key: str, pip: float) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -311,11 +270,6 @@ def _legacy_parquet_path(cache_key: str, pip: float) -> Path:
 
 
 def check_legacy_cache_per_pip(cache_key: str, chart_pips: List[float]) -> Dict[str, Optional[List[Dict]]]:
-    """
-    Check cache for each pip individually.
-    Returns dict: pip_str → list of bricks (or None if not cached).
-    Allows partial cache hits — only missing pips need to be built.
-    """
     result: Dict[str, Optional[List[Dict]]] = {}
     for pip in chart_pips:
         pip_str = str(pip)
@@ -341,11 +295,6 @@ def check_legacy_cache_per_pip(cache_key: str, chart_pips: List[float]) -> Dict[
 
 
 def check_legacy_cache_per_pip_counts(cache_key: str, chart_pips: List[float]) -> Dict[str, Optional[int]]:
-    """
-    Lightweight per-pip cache lookup.
-    Returns pip_str -> row count, or None when that pip cache is missing/unreadable.
-    Does not materialize brick rows, so it is safe for very large multi-year caches.
-    """
     result: Dict[str, Optional[int]] = {}
     for pip in chart_pips:
         pip_str = str(pip)
@@ -365,7 +314,6 @@ def check_legacy_cache_per_pip_counts(cache_key: str, chart_pips: List[float]) -
 
 
 def save_pip_cache(cache_key: str, pip: float, bricks: List[Dict[str, Any]]) -> None:
-    """Save bricks for a single pip to the flat-file legacy cache."""
     if not _ARROW_OK:
         return
     path = _legacy_parquet_path(cache_key, pip)
@@ -378,10 +326,7 @@ def save_pip_cache(cache_key: str, pip: float, bricks: List[Dict[str, Any]]) -> 
 
 
 def check_legacy_cache(cache_key: str, chart_pips: List[float]) -> Optional[Dict[str, List[Dict]]]:
-    """Check old flat-file cache format. Returns None if any pip is missing."""
     result = {}
-    
-    # 1. Try Polars (multi-threaded memory mapped read)
     try:
         import polars as pl
         for pip in chart_pips:
@@ -394,7 +339,6 @@ def check_legacy_cache(cache_key: str, chart_pips: List[float]) -> Optional[Dict
     except Exception as pl_exc:
         logger.info(f"Polars check_legacy_cache failed/unavailable: {pl_exc}. Falling back to PyArrow...")
         
-    # 2. Fallback to PyArrow
     if not _ARROW_OK:
         return None
         
@@ -412,10 +356,7 @@ def check_legacy_cache(cache_key: str, chart_pips: List[float]) -> Optional[Dict
     return result
 
 
-# ── Internal ──────────────────────────────────────────────────────────────────
-
 def _bricks_to_table(bricks: List[Dict[str, Any]]) -> "pa.Table":
-    """Convert list of brick dicts to a PyArrow table matching _BRICK_SCHEMA."""
     try:
         import polars as pl
         schema = {

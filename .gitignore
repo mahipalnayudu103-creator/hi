@@ -52,3 +52,4 @@ pip-log.txt
 *.xlsx
 data/
 !data/.gitkeep
+scratch/

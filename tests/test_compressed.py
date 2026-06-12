@@ -12,18 +12,20 @@ from pathlib import Path
 backend_dir = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(backend_dir))
 
-from utils.csv_reader import (
+from services.csv.reader import (
     get_file_size,
     open_compressed_file,
-    detect_csv_delimiter,
-    count_csv_data_rows,
-    estimate_csv_rows_from_head,
     read_last_nonempty_line,
-    summarize_csv_file,
     seek_first_timestamp_offset,
     read_selected_range_cpu,
 )
-from utils.csv_stream import stream_ticks
+from services.csv.metadata import (
+    detect_csv_delimiter,
+    count_csv_data_rows,
+    estimate_csv_rows_from_head,
+    summarize_csv_file,
+)
+from services.csv.stream import stream_ticks
 
 class TestCompressedFiles(unittest.TestCase):
     def setUp(self):

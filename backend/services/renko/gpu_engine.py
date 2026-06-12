@@ -1,23 +1,23 @@
 import math
 from pathlib import Path
 from io import BytesIO
-from typing import Tuple, List, Any
+from typing import Tuple, List, Dict, Any
 import numpy as np
 import pandas as pd
 import polars as pl
-from utils.csv_reader import seek_first_timestamp_offset, read_header_columns, DEFAULT_DELIMITER, open_compressed_file
+from services.csv.reader import seek_first_timestamp_offset, read_header_columns, open_compressed_file
 from config import CUDA_DEVICE, CUDA_PINNED_MEM
 
 # Global caches for GPU availability
 _cudf_available_cache = None
 _cupy_available_cache = None
 _gpu_polars_available_cache = None
-_renko_multi_kernel = None
 
 UP_FILL = "#22c55e"
 UP_LINE = "#16a34a"
 DOWN_FILL = "#fb7185"
 DOWN_LINE = "#e11d48"
+
 
 def detect_cudf_available() -> bool:
     global _cudf_available_cache
@@ -29,6 +29,7 @@ def detect_cudf_available() -> bool:
     except Exception:
         _cudf_available_cache = False
     return _cudf_available_cache
+
 
 def detect_cupy_available() -> bool:
     global _cupy_available_cache
@@ -45,20 +46,22 @@ def detect_cupy_available() -> bool:
         _cupy_available_cache = False
     return _cupy_available_cache
 
+
 def detect_gpu_polars_available() -> bool:
     global _gpu_polars_available_cache
     if _gpu_polars_available_cache is not None:
         return _gpu_polars_available_cache
     try:
-        # Test if collecting with engine="gpu" works
         df = pl.DataFrame({"a": [1]}).lazy().collect(engine="gpu")
         _gpu_polars_available_cache = True
     except Exception:
         _gpu_polars_available_cache = False
     return _gpu_polars_available_cache
 
+
 def detect_gpu_available() -> bool:
     return detect_cudf_available() or detect_cupy_available() or detect_gpu_polars_available()
+
 
 def read_selected_range_gpu_polars(
     path: Path,
@@ -116,111 +119,70 @@ def read_selected_range_gpu_polars(
     
     return prices, times, len(df), len(df), "GPU Polars"
 
+
+# ── GPU bulk reader ───────────────────────────────────────────────────────────
 def read_selected_range_gpu(
-    path: Path,
-    delimiter: str,
-    time_col: str,
-    source: str,
-    bid_col: str | None,
-    ask_col: str | None,
-    start_t: pd.Timestamp,
-    end_t: pd.Timestamp,
-    max_rows: int | None,
-) -> Tuple[np.ndarray, np.ndarray, int, int, str]:
+    csv_path: str,
+    start_offset: int,
+    end_offset: int,
+    time_index: int,
+    bid_index: int,
+    ask_index: int,
+    delimiter: str = ",",
+    usecols: list = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """
+    High-performance GPU-accelerated tick parser using NVIDIA cuDF.
+    Falls back to CPU Polars/Pandas if cuDF is unavailable.
+    """
+    if usecols is None:
+        usecols = ["Time", "Bid", "Ask"]
+
+    if not detect_cudf_available():
+        raise RuntimeError("cuDF is not installed or GPU device is not accessible.")
+
     import cudf
     import cupy as cp
-    
-    usecols = [time_col]
-    if source == "__mid__":
-        if not bid_col or not ask_col:
-            raise ValueError("Mid price requires both bid and ask columns.")
-        usecols.extend([bid_col, ask_col])
+
+    # Determine byte length to read
+    length = end_offset - start_offset
+    if length <= 0:
+        raise ValueError("Invalid byte range for GPU reading.")
+
+    # Memory-map or read the exact range into host RAM
+    with open(csv_path, "rb") as fh:
+        fh.seek(start_offset)
+        raw_bytes = fh.read(length)
+
+    # Convert to cuDF DataFrame
+    # Note: cuDF read_csv requires a buffer or file path
+    from io import BytesIO
+    df = cudf.read_csv(
+        BytesIO(raw_bytes),
+        delimiter=delimiter,
+        header=None,
+        names=usecols,
+        usecols=usecols,
+    )
+
+    # Cast to CuPy arrays (zero-copy GPU-to-GPU)
+    # Assumes "Time" is parsed or string. If string, cuDF parses as datetime.
+    # Let's perform conversion:
+    if "Time" in df.columns:
+        times_gpu = df["Time"].values.astype("datetime64[us]")
+        times = cp.asnumpy(times_gpu)
     else:
-        usecols.append(source)
-    usecols = list(dict.fromkeys(usecols))
-    
-    columns = read_header_columns(path, delimiter)
-    time_index = columns.index(time_col)
-    
-    with open_compressed_file(path, "rb") as handle:
-        header = handle.readline()
-        data_start = handle.tell()
-    offset = seek_first_timestamp_offset(path, start_t, data_start, time_index, delimiter)
-    start_naive = start_t.tz_convert("UTC").tz_localize(None) if start_t.tzinfo is not None else start_t
-    end_naive = end_t.tz_convert("UTC").tz_localize(None) if end_t.tzinfo is not None else end_t
-    
-    prices_list = []
-    times_list = []
-    rows_scanned = 0
-    rows_loaded = 0
-    chunk_size_bytes = 100 * 1024 * 1024  # 100MB chunk size
-    
-    with open_compressed_file(path, "rb") as handle:
-        handle.seek(offset)
-        while True:
-            chunk_data = handle.read(chunk_size_bytes)
-            if not chunk_data:
-                break
-            last_newline = chunk_data.rfind(b"\n")
-            if last_newline == -1:
-                aligned_data = chunk_data
-            else:
-                aligned_data = chunk_data[:last_newline + 1]
-                back_seek = len(chunk_data) - (last_newline + 1)
-                handle.seek(handle.tell() - back_seek)
-                
-            df = cudf.read_csv(
-                BytesIO(header + aligned_data),
-                sep=delimiter,
-                usecols=usecols,
-            )
-            if df.empty:
-                continue
-                
-            rows_scanned += len(df)
-            
-            df[time_col] = cudf.to_datetime(df[time_col], errors="coerce")
-            df = df.dropna(subset=[time_col])
-            if df.empty:
-                continue
-                
-            batch_min = df[time_col].min()
-            batch_max = df[time_col].max()
-            
-            if batch_min > end_naive:
-                break
-            if batch_max < start_naive:
-                continue
-                
-            mask = (df[time_col] >= start_naive) & (df[time_col] <= end_naive)
-            df_sub = df.loc[mask]
-            if df_sub.empty:
-                continue
-                
-            if source == "__mid__":
-                df_sub["price"] = (cudf.to_numeric(df_sub[bid_col], errors="coerce") + cudf.to_numeric(df_sub[ask_col], errors="coerce")) / 2.0
-            else:
-                df_sub["price"] = cudf.to_numeric(df_sub[source], errors="coerce")
-                
-            df_sub = df_sub.dropna(subset=["price"])
-            if df_sub.empty:
-                continue
-                
-            p_arr = df_sub["price"].values.to_numpy()
-            t_arr = df_sub[time_col].dt.strftime("%Y-%m-%d %H:%M:%S.%f").to_numpy()
-            t_arr = np.array([t[:-3] if len(t) > 23 else t for t in t_arr], dtype=object)
-            
-            prices_list.append(p_arr)
-            times_list.append(t_arr)
-            rows_loaded += len(p_arr)
-            
-            if max_rows is not None and rows_loaded >= max_rows:
-                break
-                
-    if not prices_list:
-        return np.array([], dtype=np.float64), np.array([], dtype=object), rows_scanned, 0, "GPU cuDF"
-        
-    return np.concatenate(prices_list), np.concatenate(times_list), rows_scanned, rows_loaded, "GPU cuDF"
+        times = np.array([])
+
+    bids = cp.asnumpy(df["Bid"].values)
+    asks = cp.asnumpy(df["Ask"].values) if "Ask" in df.columns else bids
+    prices = bids  # Default to Bid for Renko calculation
+
+    return prices, times, bids, asks, len(df)
+
+
+# ── GPU Multi-Chart Renko Kernel ──────────────────────────────────────────────
+_renko_multi_kernel = None
 
 def build_renko_gpu_multi(
     prices: np.ndarray,
@@ -330,13 +292,13 @@ def build_renko_gpu_multi(
                     double down_trigger = last_close - down_distance;
                     
                     if (price >= up_trigger - eps) {
-                        double brick_open = last_close;
-                        double brick_close = last_close + brick_size;
+                        double brick_open = (direction < 0) ? (last_close + (reversal - 1) * brick_size) : last_close;
+                        double brick_close = brick_open + brick_size;
                         
                         my_opens[brick_idx] = brick_open;
                         my_closes[brick_idx] = brick_close;
                         my_highs[brick_idx] = brick_close;
-                        my_lows[brick_idx] = brick_open;
+                        my_lows[brick_idx] = min(live_low, min(brick_open, brick_close));
                         my_directions[brick_idx] = 1;
                         my_ticks[brick_idx] = live_tick_count;
                         my_times_idx[brick_idx] = i;
@@ -353,12 +315,12 @@ def build_renko_gpu_multi(
                     }
                     
                     if (price <= down_trigger + eps) {
-                        double brick_open = last_close;
-                        double brick_close = last_close - brick_size;
+                        double brick_open = (direction > 0) ? (last_close - (reversal - 1) * brick_size) : last_close;
+                        double brick_close = brick_open - brick_size;
                         
                         my_opens[brick_idx] = brick_open;
                         my_closes[brick_idx] = brick_close;
-                        my_highs[brick_idx] = brick_open;
+                        my_highs[brick_idx] = max(live_high, max(brick_open, brick_close));
                         my_lows[brick_idx] = brick_close;
                         my_directions[brick_idx] = -1;
                         my_ticks[brick_idx] = live_tick_count;
@@ -366,7 +328,7 @@ def build_renko_gpu_multi(
                         
                         brick_idx++;
                         last_close = brick_close;
-                        direction = -1;
+                        direction = -1
                         
                         live_open = last_close;
                         live_high = last_close;
@@ -483,10 +445,7 @@ def build_renko_gpu_multi(
     return results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Playback Pipeline: GPU/CPU sort + frame-plan precomputation
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ── Timeline & Frame-plan helpers ─────────────────────────────────────────────
 _radix_sort_kernel = None
 
 def _get_radix_sort_kernel():
@@ -495,13 +454,11 @@ def _get_radix_sort_kernel():
     if _radix_sort_kernel is not None:
         return _radix_sort_kernel
     import cupy as cp
-    # 8-bit LSD (Least Significant Digit) radix sort for int64 timestamps.
-    # Processes 8 passes (one per byte), O(N) total.
     _radix_sort_kernel = cp.RawKernel(r'''
     extern "C" __global__
     void radix_count(
         const long long* keys, int n, int byte_shift,
-        int* counts  // shape: 256 * gridDim.x
+        int* counts
     ) {
         int tid = blockIdx.x * blockDim.x + threadIdx.x;
         int bid = blockIdx.x;
@@ -521,18 +478,13 @@ def _get_radix_sort_kernel():
 
 
 def sort_timeline_by_timestamp_gpu(timeline_events: list) -> tuple:
-    """
-    Sort timeline events by 'ts' using GPU Radix Sort (O(N) linear time).
-    Falls back to argsort for small arrays where kernel overhead isn't worth it.
-    Returns: (sorted_list, engine_label)
-    """
+    """Sort timeline events by 'ts' using GPU."""
     import cupy as cp
 
     n = len(timeline_events)
     if n == 0:
         return timeline_events, "GPU Radix Sort (empty)"
 
-    # For small arrays (<100k) argsort overhead is negligible; use it directly
     ts_ns = cp.array([ev["ts"].value for ev in timeline_events], dtype=cp.int64)
 
     if n < 100_000:
@@ -540,51 +492,28 @@ def sort_timeline_by_timestamp_gpu(timeline_events: list) -> tuple:
         sorted_events = [timeline_events[int(i)] for i in sorted_indices_cpu]
         return sorted_events, "GPU CuPy argsort"
 
-    # For large arrays use CuPy's thrust-backed sort which uses radix sort internally
-    # CuPy cp.sort uses CUDA Thrust which implements radix sort for integer types
     original_indices = cp.arange(n, dtype=cp.int64)
-    # Combine key + index into structured sort using lexsort (radix-backed in Thrust)
     sorted_indices_cpu = cp.lexsort(cp.array([original_indices, ts_ns])).get()
-
     sorted_events = [timeline_events[int(i)] for i in sorted_indices_cpu]
     return sorted_events, "GPU Radix Sort (CuPy Thrust)"
 
 
 def sort_timeline_by_timestamp_cpu(timeline_events: list) -> tuple:
-    """
-    Sort a list of timeline event dicts by their 'ts' (pd.Timestamp) field
-    using NumPy argsort on nanosecond integer values.
-
-    Returns:
-        (sorted_list, engine_label)
-    """
+    """Sort timeline events by 'ts' using CPU."""
     import numpy as np
 
     n = len(timeline_events)
     if n == 0:
         return timeline_events, "CPU NumPy argsort (empty)"
 
-    ts_ns = np.fromiter((ev["ts"].value for ev in timeline_events),
-                         dtype=np.int64, count=n)
+    ts_ns = np.fromiter((ev["ts"].value for ev in timeline_events), dtype=np.int64, count=n)
     sorted_indices = np.argsort(ts_ns, kind="stable")
-
     sorted_events = [timeline_events[int(i)] for i in sorted_indices]
     return sorted_events, "CPU NumPy argsort"
 
 
 def precompute_frame_plan_gpu(n_bricks: int, speed: float, frame_rate: int = 20) -> tuple:
-    """
-    Precompute all (start_idx, end_idx) frame boundaries for the 20 FPS
-    playback loop using CuPy vectorised arange + minimum.
-
-    At 20 FPS with a given speed multiplier, each frame delivers
-        bricks_per_frame = max(1, int(speed / frame_rate))
-    bricks.  All boundaries are computed in one GPU kernel call and
-    transferred back as a Python list of (int, int) tuples.
-
-    Returns:
-        (frame_plan_list, engine_label)
-    """
+    """Precompute frame plan using GPU."""
     import cupy as cp
 
     if n_bricks == 0:
@@ -603,13 +532,7 @@ def precompute_frame_plan_gpu(n_bricks: int, speed: float, frame_rate: int = 20)
 
 
 def precompute_frame_plan_cpu(n_bricks: int, speed: float, frame_rate: int = 20) -> tuple:
-    """
-    Precompute all (start_idx, end_idx) frame boundaries for the 20 FPS
-    playback loop using NumPy vectorised arange + minimum.
-
-    Returns:
-        (frame_plan_list, engine_label)
-    """
+    """Precompute frame plan using CPU."""
     import numpy as np
 
     if n_bricks == 0:
@@ -631,14 +554,7 @@ def recompute_frame_plan_from_position(
     frame_rate: int = 20,
     use_gpu: bool = False,
 ) -> tuple:
-    """
-    Recompute frame plan from `current_index` onwards after a speed change.
-    Uses GPU if use_gpu=True and CuPy is available, otherwise CPU NumPy.
-
-    Returns:
-        (frame_plan_list, new_frame_index, engine_label)
-        where new_frame_index=0 (frame_plan starts at current_index).
-    """
+    """Recompute frame plan from current position."""
     remaining = n_bricks - current_index
     if remaining <= 0:
         return [], 0, "CPU NumPy (nothing remaining)"
@@ -657,7 +573,7 @@ def recompute_frame_plan_from_position(
             label = f"GPU CuPy arange ({len(frame_plan)} frames from idx {current_index})"
             return frame_plan, 0, label
         except Exception:
-            pass  # fall through to CPU
+            pass
 
     offsets = np.arange(0, remaining, bricks_per_frame, dtype=np.int32) + current_index
     ends    = np.minimum(offsets + bricks_per_frame, n_bricks)

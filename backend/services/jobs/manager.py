@@ -1,5 +1,5 @@
 """
-job_manager.py — Background Renko build job tracking.
+manager.py — Background Renko build job tracking.
 
 Each job:
   - Has a UUID

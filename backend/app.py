@@ -16,8 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import ORJSONResponse, JSONResponse
 
-# Import router & setup
-from routes.api import router as api_router, init_engine_status
+# Import routers & setup
+from routes.health import router as health_router, init_engine_status
+from routes.metadata import router as metadata_router
+from routes.build import router as build_router
+from routes.cache import router as cache_router
+from routes.jobs import router as jobs_router
+from routes.playback import router as playback_router
 from utils.monitor import set_high_priority, configure_thread_pools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -47,8 +52,13 @@ class ClientLog(BaseModel):
     column: Optional[int] = None
     error: Optional[str] = None
 
-# Include API Router
-app.include_router(api_router)
+# Include API Routers
+app.include_router(health_router)
+app.include_router(metadata_router)
+app.include_router(build_router)
+app.include_router(cache_router)
+app.include_router(jobs_router)
+app.include_router(playback_router)
 
 @app.post("/api/log")
 async def client_log(log: ClientLog):
