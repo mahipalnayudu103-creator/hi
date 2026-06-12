@@ -1,0 +1,10 @@
+from pathlib import Path
+
+csv_path = Path("C:\\cTraderData\\EURUSD_Ticks_2026_Jun01_Jun07.csv")
+if not csv_path.exists():
+    print(f"File not found: {csv_path}")
+else:
+    print(f"File size: {csv_path.stat().st_size / 1024 / 1024:.3f} MB")
+    with open(csv_path, "r", encoding="utf-8") as f:
+        for i in range(10):
+            print(f"Line {i+1}: {repr(f.readline())}")

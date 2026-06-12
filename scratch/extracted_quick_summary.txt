@@ -1,0 +1,85 @@
+523: 
+524: def read_header_columns(path: Path, delimiter: str = DEFAULT_DELIMITER) -> List[str]:
+525:     with open_compressed_file(path, "r", encoding="utf-8-sig") as handle:
+526:         return next(csv.reader(handle, delimiter=delimiter), [])
+527: 
+528: def quick_csv_summary_from_preview(path: Path, preview: pd.DataFrame, time_col: str, delimiter: str) -> dict[str, Any]:
+529:     summary: dict[str, Any] = {
+530:         "path": path,
+531:         "rows": 0,
+532:         "rows_exact": False,
+533:         "delimiter": delimiter,
+534:         "size": get_file_size(path),
+535:         "mtime_ns": path.stat().st_mtime_ns,
+536:         "first_time": None,
+537:         "last_time": None,
+538:         "is_wrapping": False,
+539:         "status": "ok",
+540:         "error": "",
+541:     }
+542: 
+543:     base_year = extract_base_year(path)
+544:     preview_copy = preview.copy()
+545:     preview_copy = normalize_pandas_time_col(preview_copy, time_col, base_year=base_year)
+546:     valid_preview = preview_copy[time_col].notna()
+547:     if valid_preview.any():
+548:         summary["first_time"] = pd.Timestamp(preview_copy.loc[valid_preview, time_col].iloc[0])
+549: 
+550:     try:
+551:         last_line = read_last_nonempty_line(path)
+552:         columns = list(preview.columns)
+553:         last_values = csv_row_values(last_line, delimiter)
+554:         last_row = dict(zip(columns, last_values))
+555:         if time_col in last_row:
+556:             summary["last_time"] = parse_csv_time_value(last_row[time_col], base_year)
+557:     except Exception as exc:
+558:         summary["status"] = "partial"
+559:         summary["error"] = str(exc)
+560: 
+561:     summary["rows"] = estimate_csv_rows_from_head(path)
+562:     return summary
+563: 
+564: def summarize_csv_file(path: Path) -> dict[str, Any]:
+565:     delimiter = detect_csv_delimiter(path)
+566:     summary: dict[str, Any] = {
+567:         "path": path,
+568:         "rows": 0,
+569:         "rows_exact": True,
+570:         "delimiter": delimiter,
+571:         "size": get_file_size(path),
+572:         "mtime_ns": path.stat().st_mtime_ns,
+573:         "first_time": None,
+574:         "last_time": None,
+575:         "time_col": "",
+576:         "price_col": "",
+577:         "ask_col": "",
+578:         "is_wrapping": False,
+579:         "status": "ok",
+580:         "error": "",
+581:     }
+582: 
+583:     if summary["size"] <= 0:
+584:         summary["status"] = "empty"
+585:         return summary
+586: 
+587:     try:
+588:         with open_compressed_file(path, "rt", encoding="utf-8-sig") as f:
+589:             preview = pd.read_csv(f, nrows=25, sep=delimiter)
+590:         if preview.empty:
+591:             summary["status"] = "empty"
+592:             return summary
+593: 
+594:         time_col, price_col, ask_col = detect_columns(preview)
+595:         summary["time_col"] = time_col
+596:         summary["price_col"] = price_col
+597:         summary["ask_col"] = ask_col or ""
+598: 
+599:         # Check for wrapping timestamps
+600:         with open_compressed_file(path, "r", encoding="utf-8-sig") as handle:
+601:             reader = csv.DictReader(handle, delimiter=delimiter)
+602:             first_row = next(reader, None)
+603: 
+604:         is_wrapping = False
+605:         base_year = extract_base_year(path)
+606: 
+607:         if first_row and time_col in first_row:

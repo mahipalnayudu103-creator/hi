@@ -36,8 +36,8 @@ if errorlevel 1 (
 )
 
 python -m pip install --upgrade pip
-echo Installing dependencies from backend/requirements.txt...
-pip install -r backend/requirements.txt
+echo Installing dependencies from requirements.txt...
+pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies.
     pause
@@ -61,6 +61,6 @@ echo You can now run the backend server using the run.bat script
 echo or by executing:
 echo   .venv\Scripts\activate
 echo   cd backend
-echo   python main.py
+echo   python app.py
 echo.
 pause

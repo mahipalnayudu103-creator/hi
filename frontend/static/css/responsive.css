@@ -1,0 +1,177 @@
+/* responsive.css — Mobile and tablet layout adjustments for RenkoTerminal */
+
+/* Tablet & Mobile Layout Override (<= 1024px) */
+@media (max-width: 1024px) {
+    .app-container {
+        grid-template-columns: minmax(0, 1fr) auto !important; /* Hide left column from grid */
+        height: 100vh !important;
+        overflow: hidden !important;
+    }
+
+    /* Left Sidebar becomes a slide-out drawer */
+    .sidebar {
+        position: fixed !important;
+        top: 0 !important;
+        left: -320px !important;
+        width: 320px !important;
+        height: 100vh !important;
+        max-height: none !important;
+        z-index: 1050 !important; /* Above right sidebar */
+        box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45) !important;
+        transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        border-right: 1px solid var(--border-color) !important;
+        border-bottom: none !important;
+    }
+
+    .app-container.show-left-drawer .sidebar {
+        left: 0 !important;
+    }
+
+    /* Right Sidebar position overlay slide-over */
+    .sidebar-right {
+        position: fixed !important;
+        top: 0 !important;
+        right: -280px !important;
+        height: 100vh !important;
+        width: 280px !important;
+        z-index: 1040 !important;
+        box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45) !important;
+        transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        border-left: 1px solid var(--border-color) !important;
+    }
+
+    .app-container.hide-right .sidebar-right {
+        right: -280px !important;
+        width: 280px !important; /* Keep width so it can transition, but place offscreen */
+        box-shadow: none !important;
+    }
+
+    /* Active right sidebar overlays */
+    .app-container:not(.hide-right) .sidebar-right {
+        right: 0 !important;
+    }
+
+    .dashboard-viewport {
+        width: 100% !important;
+        height: 100vh !important;
+        overflow: hidden !important;
+    }
+
+    .charts-grid {
+        grid-template-columns: 1fr 1fr !important;
+        height: 100% !important;
+        overflow-y: auto !important;
+    }
+}
+
+/* Mobile Screen Layout Override (<= 768px) */
+@media (max-width: 768px) {
+    body.dark-theme {
+        overflow: hidden !important;
+        height: 100vh !important;
+    }
+
+    .app-container {
+        grid-template-columns: 1fr !important;
+        height: 100vh !important;
+        overflow: hidden !important;
+    }
+
+    /* Left Sidebar size */
+    .sidebar {
+        width: 280px !important;
+        left: -280px !important;
+    }
+    
+    .app-container.show-left-drawer .sidebar {
+        left: 0 !important;
+    }
+
+    /* Right Sidebar size */
+    .sidebar-right {
+        width: 260px !important;
+        right: -260px !important;
+    }
+
+    .app-container.hide-right .sidebar-right {
+        right: -260px !important;
+        width: 260px !important;
+    }
+
+    /* Swipeable/Scrollable Horizontal Monitor Bar */
+    .monitor-bar {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        padding: 6px 10px !important;
+        gap: 6px !important;
+        background: linear-gradient(135deg, #090c12 0%, #111520 100%) !important;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .monitor-bar::-webkit-scrollbar {
+        height: 3px !important;
+    }
+
+    .monitor-card {
+        flex: 0 0 115px !important;
+        min-width: 115px !important;
+        padding: 4px 8px !important;
+    }
+
+    .pipeline-card {
+        flex: 0 0 250px !important;
+        min-width: 250px !important;
+    }
+
+    .charts-grid {
+        grid-template-columns: 1fr !important; /* 1 column chart stack */
+        padding: 8px !important;
+        gap: 8px !important;
+    }
+
+    .chart-wrapper {
+        height: 280px !important;
+        min-height: 250px !important;
+    }
+
+    /* Mini Live Console Badge/Overlay styles */
+    .system-console {
+        height: 32px !important;
+        border-top: 1px solid var(--border-color) !important;
+        transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    }
+
+    .system-console.expanded,
+    .system-console:not(.collapsed) {
+        /* Default state of console on mobile is collapsed (32px), if expanded/not collapsed it is 180px */
+        height: 180px !important;
+    }
+    
+    /* On mobile, console starts collapsed by default */
+    .system-console:not(.collapsed):not(.expanded) {
+        height: 32px !important;
+    }
+}
+
+/* Phones Extra Small Screen Override (<= 480px) */
+@media (max-width: 480px) {
+    .status-panel {
+        padding: 0.4rem 0.6rem !important;
+        gap: 0.3rem 0.6rem !important;
+        font-size: 0.75rem !important;
+    }
+
+    .chart-wrapper {
+        height: 240px !important;
+    }
+
+    .board-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 0.4rem !important;
+    }
+    
+    .logo-area h1 {
+        font-size: 1.1rem !important;
+    }
+}

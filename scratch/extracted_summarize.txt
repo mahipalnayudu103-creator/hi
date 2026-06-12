@@ -1,0 +1,155 @@
+559:         summary["error"] = str(exc)
+560: 
+561:     summary["rows"] = estimate_csv_rows_from_head(path)
+562:     return summary
+563: 
+564: def summarize_csv_file(path: Path) -> dict[str, Any]:
+565:     delimiter = detect_csv_delimiter(path)
+566:     summary: dict[str, Any] = {
+567:         "path": path,
+568:         "rows": 0,
+569:         "rows_exact": True,
+570:         "delimiter": delimiter,
+571:         "size": get_file_size(path),
+572:         "mtime_ns": path.stat().st_mtime_ns,
+573:         "first_time": None,
+574:         "last_time": None,
+575:         "time_col": "",
+576:         "price_col": "",
+577:         "ask_col": "",
+578:         "is_wrapping": False,
+579:         "status": "ok",
+580:         "error": "",
+581:     }
+582: 
+583:     if summary["size"] <= 0:
+584:         summary["status"] = "empty"
+585:         return summary
+586: 
+587:     try:
+588:         with open_compressed_file(path, "rt", encoding="utf-8-sig") as f:
+589:             preview = pd.read_csv(f, nrows=25, sep=delimiter)
+590:         if preview.empty:
+591:             summary["status"] = "empty"
+592:             return summary
+593: 
+594:         time_col, price_col, ask_col = detect_columns(preview)
+595:         summary["time_col"] = time_col
+596:         summary["price_col"] = price_col
+597:         summary["ask_col"] = ask_col or ""
+598: 
+599:         # Check for wrapping timestamps
+600:         with open_compressed_file(path, "r", encoding="utf-8-sig") as handle:
+601:             reader = csv.DictReader(handle, delimiter=delimiter)
+602:             first_row = next(reader, None)
+603: 
+604:         is_wrapping = False
+605:         base_year = extract_base_year(path)
+606: 
+607:         if first_row and time_col in first_row:
+608:             first_val = str(first_row[time_col]).strip()
+609:             if first_val.count(':') == 1 and '-' not in first_val and '/' not in first_val and ' ' not in first_val:
+610:                 is_wrapping = True
+611: 
+612:         if is_wrapping:
+613:             summary["is_wrapping"] = True
+614:             # We must sequentially process the time column to get the correct last time!
+615:             df_time = pl.read_csv(path, columns=[time_col], separator=delimiter)
+616:             state = {"last_min": 0, "cum_hours": 0}
+617:             df_time = normalize_polars_time_col(df_time, time_col, state, base_year)
+618:             if not df_time.is_empty():
+619:                 summary["first_time"] = pd.Timestamp(df_time[time_col][0])
+620:                 summary["last_time"] = pd.Timestamp(df_time[time_col][-1])
+621:             summary["rows"] = len(df_time)
+622:             summary["rows_exact"] = True
+623:             return summary
+624: 
+625:         if summary["size"] > EXACT_ROW_COUNT_MAX_BYTES:
+626:             quick_summary = quick_csv_summary_from_preview(path, preview, time_col, delimiter)
+627:             quick_summary["time_col"] = time_col
+628:             quick_summary["price_col"] = price_col
+629:             quick_summary["ask_col"] = ask_col or ""
+630:             quick_summary["status"] = "large_estimate"
+631:             quick_summary["rows_exact"] = False
+632:             return quick_summary
+633: 
+634:         summary["rows"] = count_csv_data_rows(path)
+635:         last_line = read_last_nonempty_line(path)
+636: 
+637:         if first_row and time_col in first_row:
+638:             summary["first_time"] = parse_csv_time_value(first_row[time_col], base_year)
+639: 
+640:         if last_line:
+641:             with open_compressed_file(path, "r", encoding="utf-8-sig") as handle:
+642:                 header = next(csv.reader(handle, delimiter=delimiter), [])
+643:             last_values = csv_row_values(last_line, delimiter)
+644:             last_row = dict(zip(header, last_values))
+645:             if time_col in last_row:
+646:                 summary["last_time"] = parse_csv_time_value(last_row[time_col], base_year)
+647: 
+648:         return summary
+649:     except Exception as exc:
+650:         summary["status"] = "error"
+651:         summary["error"] = str(exc)
+652:         return summary
+653: 
+654: def line_at_or_after(handle, offset: int, data_start: int) -> Tuple[int, int, str]:
+655:     if offset <= data_start:
+656:         handle.seek(data_start)
+657:     else:
+658:         handle.seek(offset)
+659:         handle.readline()
+660: 
+661:     line_start = handle.tell()
+662:     raw = handle.readline()
+663:     line_end = handle.tell()
+664:     if not raw:
+665:         return line_start, line_end, ""
+666:     return line_start, line_end, raw.decode("utf-8", errors="replace").strip()
+667: 
+668: def seek_first_timestamp_offset(path: Path, target: pd.Timestamp, data_start: int, time_index: int, delimiter: str) -> int:
+669:     file_size = get_file_size(path)
+670:     low = data_start
+671:     high = file_size
+672: 
+673:     # Ensure target is timezone-naive UTC for safe comparison
+674:     target_naive = target.tz_convert("UTC").tz_localize(None) if target.tzinfo is not None else target
+675: 
+676:     with open_compressed_file(path, "rb") as handle:
+677:         for _ in range(80):
+678:             if high - low <= 256:
+679:                 break
+680:             midpoint = (low + high) // 2
+681:             line_start, line_end, line = line_at_or_after(handle, midpoint, data_start)
+682:             if not line:
+683:                 high = midpoint
+684:                 continue
+685: 
+686:             values = csv_row_values(line, delimiter)
+687:             row_time = parse_csv_time_value(values[time_index]) if len(values) > time_index else None
+688:             # Both row_time and target_naive are now timezone-naive UTC
+689:             if row_time is None or row_time < target_naive:
+690:                 low = max(line_end, midpoint + 1)
+691:             else:
+692:                 high = line_start if line_start < high else midpoint
+693: 
+694:         aligned_start, _, _ = line_at_or_after(handle, low, data_start)
+695:         return max(data_start, aligned_start)
+696: 
+697: def read_selected_range_duckdb(
+698:     path: Path,
+699:     delimiter: str,
+700:     time_col: str,
+701:     source: str,
+702:     bid_col: str | None,
+703:     ask_col: str | None,
+704:     start_t: pd.Timestamp,
+705:     end_t: pd.Timestamp,
+706:     max_rows: int | None,
+707: ) -> tuple:
+708:     import duckdb
+709:     import numpy as np
+710: 
+711:     start_str = start_t.strftime("%Y-%m-%d %H:%M:%S.%f")[:23]
+712:     end_str   = end_t.strftime("%Y-%m-%d %H:%M:%S.%f")[:23]
+713:     sep_char  = delimiter.replace("'", "''")

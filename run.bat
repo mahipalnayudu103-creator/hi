@@ -1,23 +1,38 @@
 @echo off
+setlocal
+
+set "ROOT=%~dp0"
+set "PORT=5006"
+set "VENV_PYTHON=%ROOT%.venv\Scripts\python.exe"
+
 echo ===================================================
-echo   Renko Tick Playback Dashboard — Startup Script
+echo   Renko Tick Playback Dashboard - Startup Script
 echo ===================================================
 echo.
 
-:: Check if virtual environment exists
-if not exist ".venv\Scripts\activate.bat" (
-    echo [ERROR] Virtual environment not found. Please run setup.bat first!
-    pause
-    exit /b 1
+cd /d "%ROOT%"
+
+echo Stopping existing Renko server on port %PORT%...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$renkoPids = @(Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); foreach ($id in $renkoPids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }"
+timeout /t 1 /nobreak >nul 2>&1
+echo [OK] Port %PORT% is clear.
+echo.
+
+if exist "%VENV_PYTHON%" (
+    set "PYTHON=%VENV_PYTHON%"
+    echo Using virtual environment.
+) else (
+    set "PYTHON=python"
+    echo Using system Python.
 )
 
-:: Activate virtual environment
-echo Activating virtual environment (.venv)...
-call .venv\Scripts\activate.bat
+if not exist "%ROOT%backend\cache_store" mkdir "%ROOT%backend\cache_store"
 
-:: Start backend server
-echo Starting backend server on http://127.0.0.1:5006 ...
-cd backend
-python main.py
+set "RENKO_OPEN_BROWSER=1"
 
+echo Starting backend server on http://127.0.0.1:%PORT% ...
+"%PYTHON%" "%ROOT%backend\app.py"
+
+echo.
+echo Server stopped.
 pause
