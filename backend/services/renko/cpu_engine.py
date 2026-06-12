@@ -3,10 +3,10 @@ import numpy as np
 import numba
 from typing import Tuple, List, Dict, Any
 
-UP_FILL = "#22c55e"
-UP_LINE = "#16a34a"
-DOWN_FILL = "#fb7185"
-DOWN_LINE = "#e11d48"
+from services.renko.rules import (
+    UP_FILL, UP_LINE, DOWN_FILL, DOWN_LINE,
+    get_triggers, get_up_brick_bounds, get_down_brick_bounds
+)
 
 class RenkoState:
     def __init__(
@@ -80,15 +80,10 @@ class RenkoState:
         eps = self.brick_size / 1_000_000.0
 
         while True:
-            reversal = max(1, self.reversal_boxes)
-            up_distance = self.brick_size if self.direction >= 0 else reversal * self.brick_size
-            down_distance = self.brick_size if self.direction <= 0 else reversal * self.brick_size
-            up_trigger = self.last_close + up_distance
-            down_trigger = self.last_close - down_distance
+            up_trigger, down_trigger = get_triggers(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
 
             if price >= up_trigger - eps:
-                brick_open = self.last_close
-                brick_close = self.last_close + self.brick_size
+                brick_open, brick_close = get_up_brick_bounds(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
 
                 row_data = self._append_brick(
                     brick_open=brick_open,
@@ -109,8 +104,7 @@ class RenkoState:
                 continue
 
             if price <= down_trigger + eps:
-                brick_open = self.last_close
-                brick_close = self.last_close - self.brick_size
+                brick_open, brick_close = get_down_brick_bounds(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
 
                 row_data = self._append_brick(
                     brick_open=brick_open,
@@ -182,15 +176,13 @@ class RenkoState:
         if self.last_close is None or self.live_open is None:
             return None
         index = len(self.confirmed_indices)
-        fh = max(self.live_high, current_price) if self.live_high is not None else current_price
-        fl = min(self.live_low,  current_price) if self.live_low  is not None else current_price
         is_up = current_price >= self.live_open
         return {
             "time": index + 1,
             "confirm_time": "",
             "open": self.live_open,
-            "high": current_price if is_up else fh,
-            "low":  fl            if is_up else current_price,
+            "high": max(self.live_open, current_price),
+            "low":  min(self.live_open, current_price),
             "close": current_price,
             "direction": "up" if is_up else "down",
             "tick_count": self.live_tick_count,
@@ -262,15 +254,10 @@ def _build_renko_numba(
         live_tick_count += 1
         
         while True:
-            reversal = max(1, reversal_boxes)
-            up_distance = brick_size if direction >= 0 else reversal * brick_size
-            down_distance = brick_size if direction <= 0 else reversal * brick_size
-            up_trigger = last_close + up_distance
-            down_trigger = last_close - down_distance
+            up_trigger, down_trigger = get_triggers(last_close, direction, reversal_boxes, brick_size)
             
             if price >= up_trigger - eps:
-                brick_open = last_close
-                brick_close = last_close + brick_size
+                brick_open, brick_close = get_up_brick_bounds(last_close, direction, reversal_boxes, brick_size)
                 
                 # Check for array capacity and double if needed
                 if brick_idx >= len(out_opens):
@@ -323,8 +310,7 @@ def _build_renko_numba(
                 continue
                 
             if price <= down_trigger + eps:
-                brick_open = last_close
-                brick_close = last_close - brick_size
+                brick_open, brick_close = get_down_brick_bounds(last_close, direction, reversal_boxes, brick_size)
                 
                 # Check for array capacity and double if needed
                 if brick_idx >= len(out_opens):

@@ -41,14 +41,15 @@ _IO_POOL   = ThreadPoolExecutor(max_workers=_CPU_COUNT, thread_name_prefix="csv_
 # ── Imports from refactored modules ──────────────────────────────────────────
 from services.csv.stream import stream_ticks, CSV_CHUNK_ROWS
 from services.renko.state import build_streaming_engines
+from services.renko.rules import RENKO_METHOD_LABEL
 from services.cache.parquet_store import (
     RenkoParquetWriter, BRICK_WRITE_BATCH_SIZE,
     check_legacy_cache, _legacy_parquet_path,
-    read_last_n_bricks, _BRICK_SCHEMA
+    _BRICK_SCHEMA
 )
 from services.cache.build_history import record_build
 from utils.memory import log_chunk_memory, get_process_ram_mb, force_gc, MAX_RAM_MB
-from services.jobs.manager import RenkoJob, SENTINEL
+from services.jobs.manager import RenkoJob
 from utils.monitor import get_system_stats
 from utils.parquet_meta_cache import invalidate_job as _pmeta_invalidate_job
 from config import CACHE_DIR
@@ -137,7 +138,7 @@ async def run_build_pipeline(
             engine_label = "CPU DuckDB"
         except ImportError:
             engine_label = "CPU pandas"
-    job.engine_used = f"{engine_label} + Streaming RenkoState + cTrader body v2"
+    job.engine_used = f"{engine_label} + Streaming RenkoState + {RENKO_METHOD_LABEL}"
 
     try:
         # State helper for thread processing
@@ -594,7 +595,7 @@ async def run_gpu_streaming_pipeline(
             except Exception as e:
                 logger.warning(f"Per-pip cache copy failed: {e}")
 
-    engine_used = "GPU CuPy Streaming + cTrader body v2"
+    engine_used = f"GPU CuPy Streaming + {RENKO_METHOD_LABEL}"
 
     writer.write_meta({
         "rows_scanned": rows_scanned,

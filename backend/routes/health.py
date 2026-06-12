@@ -2,7 +2,6 @@ from fastapi import APIRouter
 from typing import Dict, Any
 from utils.monitor import get_system_stats
 from services.renko.gpu_engine import (
-    detect_gpu_available,
     detect_cupy_available,
     detect_gpu_polars_available,
     detect_cudf_available,

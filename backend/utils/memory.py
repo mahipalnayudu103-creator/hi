@@ -16,7 +16,7 @@ MAX_RAM_MB is the soft limit. When exceeded:
 import gc
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict
 from config import MAX_RAM_MB
 
 logger = logging.getLogger("renko_playback.memory")

@@ -15,12 +15,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import numba
 
-logger = logging.getLogger("renko_playback.renko_state")
+from services.renko.rules import get_triggers, get_up_brick_bounds, get_down_brick_bounds
 
-UP_FILL   = "#22c55e"
-UP_LINE   = "#16a34a"
-DOWN_FILL = "#fb7185"
-DOWN_LINE = "#e11d48"
+logger = logging.getLogger("renko_playback.renko_state")
 
 
 class RenkoState:
@@ -114,21 +111,11 @@ class RenkoState:
         seq = 0  # sub-index within this tick
 
         while True:
-            reversal      = self.reversal_boxes
-            up_distance   = self.brick_size if self.direction >= 0 else reversal * self.brick_size
-            down_distance = self.brick_size if self.direction <= 0 else reversal * self.brick_size
-            up_trigger    = self.last_close + up_distance
-            down_trigger  = self.last_close - down_distance
+            up_trigger, down_trigger = get_triggers(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
 
             if price >= up_trigger - self._eps:
                 # ── Upward brick ─────────────────────────────────────────────
-                if self.direction < 0:
-                    brick_open  = self.last_close
-                    brick_close = self.last_close + self.brick_size
-                else:
-                    brick_open  = self.last_close
-                    brick_close = self.last_close + self.brick_size
-
+                brick_open, brick_close = get_up_brick_bounds(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
                 brick_high = brick_close
                 brick_low  = brick_open
 
@@ -152,13 +139,7 @@ class RenkoState:
 
             if price <= down_trigger + self._eps:
                 # ── Downward brick ───────────────────────────────────────────
-                if self.direction > 0:
-                    brick_open  = self.last_close
-                    brick_close = self.last_close - self.brick_size
-                else:
-                    brick_open  = self.last_close
-                    brick_close = self.last_close - self.brick_size
-
+                brick_open, brick_close = get_down_brick_bounds(self.last_close, self.direction, self.reversal_boxes, self.brick_size)
                 brick_high = brick_open
                 brick_low  = brick_close
 
@@ -281,14 +262,9 @@ class RenkoState:
         if not self.initialized or self.forming_open is None:
             return None
 
-        fh = self.forming_high if self.forming_high is not None else current_price
-        fl = self.forming_low  if self.forming_low  is not None else current_price
-        fh = max(fh, current_price)
-        fl = min(fl, current_price)
-
         is_up = current_price >= self.forming_open
-        live_high = current_price if is_up else fh
-        live_low  = fl            if is_up else current_price
+        live_high = max(self.forming_open, current_price)
+        live_low  = min(self.forming_open, current_price)
 
         # Use the same unique x encoding as confirmed bricks: tick_index * 1000 + seq
         live_time = tick_index * 1000 + seq
@@ -488,21 +464,11 @@ def _process_ticks_numba_core(
         
         # Check for brick confirmations
         while True:
-            reversal = max(1, reversal_boxes)
-            up_distance = brick_size if direction >= 0 else reversal * brick_size
-            down_distance = brick_size if direction <= 0 else reversal * brick_size
-            up_trigger = last_close + up_distance
-            down_trigger = last_close - down_distance
+            up_trigger, down_trigger = get_triggers(last_close, direction, reversal_boxes, brick_size)
             
             if price >= up_trigger - eps:
                 # Upward brick
-                if direction < 0:
-                    brick_open = last_close
-                    brick_close = last_close + brick_size
-                else:
-                    brick_open = last_close
-                    brick_close = last_close + brick_size
-                    
+                brick_open, brick_close = get_up_brick_bounds(last_close, direction, reversal_boxes, brick_size)
                 brick_high = brick_close
                 brick_low = brick_open
                 
@@ -531,13 +497,7 @@ def _process_ticks_numba_core(
                 
             if price <= down_trigger + eps:
                 # Downward brick
-                if direction > 0:
-                    brick_open = last_close
-                    brick_close = last_close - brick_size
-                else:
-                    brick_open = last_close
-                    brick_close = last_close - brick_size
-                    
+                brick_open, brick_close = get_down_brick_bounds(last_close, direction, reversal_boxes, brick_size)
                 brick_high = brick_open
                 brick_low = brick_close
                 

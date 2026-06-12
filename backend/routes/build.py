@@ -1,7 +1,7 @@
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 import pandas as pd
 
 from models.schemas import RenkoRequest, RenkoResponse, RenkoBrick
@@ -20,12 +20,10 @@ from services.csv.reader import (
     read_selected_range_duckdb,
 )
 from services.cache.keys import get_cache_key, check_cache, save_cache
+from services.renko.rules import RENKO_METHOD_LABEL, RENKO_METHOD_CACHE_VARIANT
 
 logger = logging.getLogger("renko_playback.routes.build")
 router = APIRouter()
-
-RENKO_METHOD_LABEL = "cTrader body v2"
-RENKO_METHOD_CACHE_VARIANT = "ctrader_body_v2"
 
 
 @router.post("/api/build-renko", response_model=RenkoResponse)

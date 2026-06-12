@@ -1,11 +1,9 @@
-import math
 from pathlib import Path
 from io import BytesIO
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List
 import numpy as np
 import pandas as pd
 import polars as pl
-from services.csv.reader import seek_first_timestamp_offset, read_header_columns, open_compressed_file
 from config import CUDA_DEVICE, CUDA_PINNED_MEM
 
 # Global caches for GPU availability
@@ -13,10 +11,7 @@ _cudf_available_cache = None
 _cupy_available_cache = None
 _gpu_polars_available_cache = None
 
-UP_FILL = "#22c55e"
-UP_LINE = "#16a34a"
-DOWN_FILL = "#fb7185"
-DOWN_LINE = "#e11d48"
+from services.renko.rules import UP_FILL, UP_LINE, DOWN_FILL, DOWN_LINE
 
 
 def detect_cudf_available() -> bool:
@@ -298,7 +293,7 @@ def build_renko_gpu_multi(
                         my_opens[brick_idx] = brick_open;
                         my_closes[brick_idx] = brick_close;
                         my_highs[brick_idx] = brick_close;
-                        my_lows[brick_idx] = min(live_low, min(brick_open, brick_close));
+                        my_lows[brick_idx] = brick_open;
                         my_directions[brick_idx] = 1;
                         my_ticks[brick_idx] = live_tick_count;
                         my_times_idx[brick_idx] = i;
@@ -320,7 +315,7 @@ def build_renko_gpu_multi(
                         
                         my_opens[brick_idx] = brick_open;
                         my_closes[brick_idx] = brick_close;
-                        my_highs[brick_idx] = max(live_high, max(brick_open, brick_close));
+                        my_highs[brick_idx] = brick_open;
                         my_lows[brick_idx] = brick_close;
                         my_directions[brick_idx] = -1;
                         my_ticks[brick_idx] = live_tick_count;
@@ -328,7 +323,7 @@ def build_renko_gpu_multi(
                         
                         brick_idx++;
                         last_close = brick_close;
-                        direction = -1
+                        direction = -1;
                         
                         live_open = last_close;
                         live_high = last_close;

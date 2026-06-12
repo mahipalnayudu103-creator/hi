@@ -14,9 +14,8 @@ the requested time window — < 0.1 ms per query.
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Tuple, Any
 
 logger = logging.getLogger("renko_playback.parquet_meta_cache")
 

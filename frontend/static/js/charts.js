@@ -127,7 +127,7 @@ class RenkoChart {
         this.reversalEnabled = true;
         this.separatorsEnabled = false;
         // Wicks are always plotted tick-by-tick along with the bars
-        this.showWicks = true;
+        this.showWicks = false;
 
         // Lazy-init per-chart lookup tables
         if (!metaByChart[this.chartId]) metaByChart[this.chartId] = new Map();

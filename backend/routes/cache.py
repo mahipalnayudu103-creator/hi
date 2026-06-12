@@ -6,12 +6,11 @@ from fastapi import APIRouter, HTTPException
 from models.schemas import CacheLookupRequest
 from services.csv.metadata import resolve_csv_path
 from services.cache.build_history import lookup_sub_range, lookup_similar, delete_by_key
+from services.renko.rules import RENKO_METHOD_LABEL
 from config import CACHE_DIR
 
 logger = logging.getLogger("renko_playback.routes.cache")
 router = APIRouter()
-
-RENKO_METHOD_LABEL = "cTrader body v2"
 
 
 @router.post("/api/cache/lookup")

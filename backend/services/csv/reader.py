@@ -7,7 +7,7 @@ import pandas as pd
 import polars as pl
 from pathlib import Path
 from io import BytesIO
-from typing import Tuple, List, Any
+from typing import Tuple, List
 
 # Import metadata helpers from the sibling module
 from services.csv.metadata import (

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import pandas as pd
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 
@@ -33,17 +33,12 @@ from services.cache.keys import get_cache_key
 from services.renko.gpu_engine import detect_cupy_available
 from utils.downsample import maybe_downsample
 from utils.monitor import get_system_stats
-from utils.parquet_meta_cache import (
-    read_window_cached as _pmeta_read_window,
-    invalidate_job as _pmeta_invalidate_job,
-)
+from utils.parquet_meta_cache import read_window_cached as _pmeta_read_window
 from config import CACHE_DIR
+from services.renko.rules import RENKO_METHOD_LABEL, RENKO_METHOD_CACHE_VARIANT
 
 logger = logging.getLogger("renko_playback.routes.jobs")
 router = APIRouter()
-
-RENKO_METHOD_LABEL = "cTrader body v2"
-RENKO_METHOD_CACHE_VARIANT = "ctrader_body_v2"
 
 
 def _fast_dumps(obj: Any) -> str:

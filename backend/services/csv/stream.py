@@ -286,7 +286,6 @@ def _process_chunk_duckdb(
     start_naive,
     end_naive,
 ) -> Chunk:
-    import pyarrow as pa
     import pyarrow.csv as pa_csv
 
     start_str = str(start_naive)[:23]

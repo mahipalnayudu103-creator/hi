@@ -1,5 +1,4 @@
 import logging
-import pandas as pd
 from fastapi import APIRouter, HTTPException
 
 from models.schemas import MetadataRequest, MetadataResponse

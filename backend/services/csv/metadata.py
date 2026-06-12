@@ -1,14 +1,10 @@
 import csv
 import io
 import os
-import gzip
-import zipfile
-import numpy as np
 import pandas as pd
 import polars as pl
 from pathlib import Path
-from io import BytesIO
-from typing import Tuple, List, Any
+from typing import Tuple, Any
 
 # Dynamic imports from services.csv.reader are used in functions below to prevent circular dependency
 
