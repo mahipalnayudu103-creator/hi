@@ -1,0 +1,186 @@
+=== Match at line 730 ===
+715:                 price_source:   priceSourceSelect.value,
+716:                 reversal_boxes: parseInt(reversalBoxes.value),
+717:                 pip_size:       parseFloat(pipSize.value),
+718:                 anchor:         anchorModeSelect.value,
+719:                 chart_pips:     chartPips,
+720:             }),
+721:         });
+722:         if (!resp.ok) return;
+723:         const data = await resp.json();
+724:         _lastCacheLookup = data;
+725:         renderCacheLookupPanel(data);
+726: 
+727:         if (data.exact_match || data.sub_range_match) {
+728:             if (chartsLoaded) {
+729:                 console.log("[AUTO-LOAD] Date range changed & cache match found. Auto-loading slice:", selectedStartUtc, "to", selectedEndUtc);
+730:                 _loadAndRenderResult(data.job_id, chartPips, selectedStartUtc, selectedEndUtc);
+731:             }
+732:         } else {
+733:             if (chartsLoaded) {
+734:                 charts.forEach(c => c.clear());
+735:                 chartsLoaded = false;
+736:                 statusText.textContent = "Range changed. Build Renko Charts again.";
+737:                 statusText.className = "value warning";
+738:             }
+739:         }
+740:     } catch (_) { /* network errors are silent */ }
+741: }
+742: 
+743: function renderCacheLookupPanel(data) {
+744:     const card = document.getElementById("cacheReuseCard");
+745:     if (!card) return;
+746: 
+747:     const titleEl = document.getElementById("cacheCardTitle");
+748:     const fileEl  = document.getElementById("cacheFileNameText");
+749:     const rangeEl = document.getElementById("cacheRangeText");
+750:     const pipsEl  = document.getElementById("cachePipsText");
+751:     const bricksEl = document.getElementById("cacheBricksText");
+752:     const builtEl = document.getElementById("cacheBuiltTimeText");
+753:     const simSec  = document.getElementById("similarCachePanel");
+754:     const simList = document.getElementById("similarCacheList");
+755: 
+756:     const hasMatch = data.exact_match || data.sub_range_match;
+757:     const meta = data.metadata;
+758:     const similar = data.similar_matches || [];
+759: 
+760:     if (hasMatch && meta) {
+761:         if (titleEl) {
+762:             titleEl.textContent = data.exact_match ? "💾 Previous Build Found" : "⚡ Cache Reuse Available";
+763:         }
+764:         
+765:         // Extract filename from csv_path
+766:         const csvPath = meta.csv_path || "";
+767:         const filename = csvPath.split(/[\\/]/).pop();
+768:         if (fileEl) fileEl.textContent = filename || "—";
+769: 
+770:         // Display range
+771:         const mStart = meta.start_utc ? meta.start_utc.slice(0, 19).replace("T", " ") : "";
+772:         const mEnd = meta.end_utc ? meta.end_utc.slice(0, 19).replace("T", " ") : "";
+773:         if (rangeEl) rangeEl.textContent = `${mStart} to ${mEnd}`;
+774: 
+
+=== Match at line 1062 ===
+1047:             statusText.className = "value error";
+1048:             progressSection.classList.add("hidden");
+1049:             setPipelineStage(null);
+1050:         },
+1051:         onStats: (stats) => updateMonitor(stats),
+1052:         onClose: () => {
+1053:             console.log("Job WS closed.");
+1054:             setTimeout(() => { _buildRequestActive = false; }, 5000);
+1055:         },
+1056:     });
+1057: 
+1058:     statusText.textContent = `${buildLabel.charAt(0).toUpperCase()}${buildLabel.slice(1)} running...`;
+1059:     statusText.className = "value warning";
+1060: }
+1061: 
+1062: async function _loadAndRenderResult(jobId, chartPips, startUtc = "", endUtc = "") {
+1063:     try {
+1064:         statusText.textContent = "Fetching bricks…";
+1065:         const result = await RenkoAPI.getJobResult(jobId, startUtc, endUtc);
+1066:         currentBricksData = result.charts;
+1067:         currentTicksData = result.ticks || [];
+1068: 
+1069:         currentJobId = jobId;
+1070:         const consoleJobId = document.getElementById("consoleJobId");
+1071:         if (consoleJobId) consoleJobId.textContent = `Job: ${jobId.slice(0, 8)}…`;
+1072: 
+1073:         // Update labels
+1074:         charts.forEach((c, i) => c.setTitle(`Chart ${i + 1} (${chartPips[i]} Pip${chartPips[i] !== 1 ? "s" : ""})`));
+1075: 
+1076:         // Render all 4 charts
+1077:         charts.forEach((c, i) => {
+1078:             const pNum = parseFloat(chartPips[i]);
+1079:             let data = [];
+1080:             for (const [k, val] of Object.entries(result.charts || {})) {
+1081:                 if (Math.abs(parseFloat(k) - pNum) < 1e-6) {
+1082:                     data = val;
+1083:                     break;
+1084:                 }
+1085:             }
+1086:             c.setData(data);
+1087:         });
+1088: 
+1089:         const renderedBricks = Object.values(result.bricks_built || {}).reduce((s, v) => s + v, 0);
+1090:         const totalBricks = Object.values(result.total_bricks_built || result.bricks_built || {}).reduce((s, v) => s + v, 0);
+1091:         ticksLoadedText.textContent  = (result.ticks_used || 0).toLocaleString();
+1092:         bricksBuiltText.textContent  = totalBricks.toLocaleString();
+1093:         dataEngineStatus.textContent = result.engine_used || "Done";
+1094: 
+1095:         if (result.ticks && result.ticks.length > 0) {
+1096:             updateDebugPanel({
+1097:                 loadedFirstTick: result.ticks[0].time,
+1098:                 loadedLastTick: result.ticks[result.ticks.length - 1].time,
+1099:                 loadedTickCount: result.ticks.length,
+1100:                 backendReqStart: selectedStartUtc,
+1101:                 backendReqEnd: selectedEndUtc
+1102:             });
+1103:         }
+1104: 
+1105:         console.log(`✅ Rendered: ${totalBricks.toLocaleString()} bricks | Engine: ${result.engine_used}`);
+1106:         console.log(`Rendered ${renderedBricks.toLocaleString()} visible bricks from ${totalBricks.toLocaleString()} built bricks | Engine: ${result.engine_used}`);
+
+=== Match at line 1086 ===
+1071:         if (consoleJobId) consoleJobId.textContent = `Job: ${jobId.slice(0, 8)}…`;
+1072: 
+1073:         // Update labels
+1074:         charts.forEach((c, i) => c.setTitle(`Chart ${i + 1} (${chartPips[i]} Pip${chartPips[i] !== 1 ? "s" : ""})`));
+1075: 
+1076:         // Render all 4 charts
+1077:         charts.forEach((c, i) => {
+1078:             const pNum = parseFloat(chartPips[i]);
+1079:             let data = [];
+1080:             for (const [k, val] of Object.entries(result.charts || {})) {
+1081:                 if (Math.abs(parseFloat(k) - pNum) < 1e-6) {
+1082:                     data = val;
+1083:                     break;
+1084:                 }
+1085:             }
+1086:             c.setData(data);
+1087:         });
+1088: 
+1089:         const renderedBricks = Object.values(result.bricks_built || {}).reduce((s, v) => s + v, 0);
+1090:         const totalBricks = Object.values(result.total_bricks_built || result.bricks_built || {}).reduce((s, v) => s + v, 0);
+1091:         ticksLoadedText.textContent  = (result.ticks_used || 0).toLocaleString();
+1092:         bricksBuiltText.textContent  = totalBricks.toLocaleString();
+1093:         dataEngineStatus.textContent = result.engine_used || "Done";
+1094: 
+1095:         if (result.ticks && result.ticks.length > 0) {
+1096:             updateDebugPanel({
+1097:                 loadedFirstTick: result.ticks[0].time,
+1098:                 loadedLastTick: result.ticks[result.ticks.length - 1].time,
+1099:                 loadedTickCount: result.ticks.length,
+1100:                 backendReqStart: selectedStartUtc,
+1101:                 backendReqEnd: selectedEndUtc
+1102:             });
+1103:         }
+1104: 
+1105:         console.log(`✅ Rendered: ${totalBricks.toLocaleString()} bricks | Engine: ${result.engine_used}`);
+1106:         console.log(`Rendered ${renderedBricks.toLocaleString()} visible bricks from ${totalBricks.toLocaleString()} built bricks | Engine: ${result.engine_used}`);
+1107:         result.diagnostics?.forEach(d => logToUI(`[DIAG] ${d}`, "info"));
+1108: 
+1109:         chartsLoaded = true;
+1110:         statusText.textContent = `Charts ready — ${totalBricks.toLocaleString()} bricks`;
+1111:         statusText.textContent = `Charts ready - ${renderedBricks.toLocaleString()} visible / ${totalBricks.toLocaleString()} built bricks`;
+1112:         statusText.className = "value success";
+1113:         progressSection.classList.add("hidden");
+1114:         setPipelineStage(null);
+1115:     } catch (err) {
+1116:         console.error("Fetch result error:", err);
+1117:         statusText.textContent = `Result fetch error: ${err.message}`;
+1118:         statusText.className = "value warning";
+1119:     }
+1120: }
+1121: 
+1122: let cachePlaybackData = null;
+1123: let cachePlaybackSequence = [];
+1124: let cachePlaybackIndex = 0;
+1125: let cachePlaybackTime = null;
+1126: const MAX_LIVE_BUILD_BRICKS_PER_CHART = 20000;
+1127: let cachePlaybackLastRealTime = null;
+1128: let cachePlaybackTimer = null;
+1129: let stagedCache = null;
+1130: let lastConfirmedBricks = [];
+

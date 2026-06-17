@@ -1,0 +1,95 @@
+210:     _ENGINE_STATUS = probe_engine_status()
+211:     return _ENGINE_STATUS
+212: 
+213: 
+214: @router.get("/api/health")
+215: def health_check():
+216:     return {"status": "ok"}
+217: 
+218: 
+219: @router.get("/api/engine-status")
+220: def engine_status_endpoint():
+221:     """Returns the real backend performance stack — no fake GPU labels."""
+222:     return _ENGINE_STATUS if _ENGINE_STATUS else probe_engine_status()
+223: 
+224: 
+225: @router.post("/api/metadata", response_model=MetadataResponse)
+226: def get_metadata(request: MetadataRequest):
+227:     csv_path = resolve_csv_path(request.csv_path)
+228:     if not csv_path.exists() or not csv_path.is_file():
+229:         raise HTTPException(status_code=400, detail=f"CSV file not found: {request.csv_path}")
+230:     
+231:     try:
+232:         summary = summarize_csv_file(csv_path)
+233:         if summary.get("status") == "error":
+234:             raise HTTPException(status_code=400, detail=f"Error parsing CSV: {summary.get('error')}")
+235:         
+236:         # Convert timestamp to ISO 8601 strings with Z indicator
+237:         start_utc = ""
+238:         if summary.get("first_time"):
+239:             start_utc = summary["first_time"].isoformat()
+240:             if not start_utc.endswith("Z") and "+00:00" not in start_utc:
+241:                 start_utc += "Z"
+242:             else:
+243:                 start_utc = start_utc.replace("+00:00", "Z")
+244:             
+245:         end_utc = ""
+246:         if summary.get("last_time"):
+247:             end_utc = summary["last_time"].isoformat()
+248:             if not end_utc.endswith("Z") and "+00:00" not in end_utc:
+249:                 end_utc += "Z"
+250:             else:
+251:                 end_utc = end_utc.replace("+00:00", "Z")
+252:             
+253:         return MetadataResponse(
+254:             path=str(summary["path"]),
+255:             rows_estimated=summary["rows"],
+256:             size_bytes=summary["size"],
+257:             file_start_utc=start_utc,
+258:             file_end_utc=end_utc,
+259:             time_col=summary["time_col"],
+260:             bid_col=summary["price_col"],
+261:             ask_col=summary["ask_col"] if summary["ask_col"] else None,
+262:             delimiter=summary["delimiter"],
+263:             detected_pip_size=detect_pip_size(summary["path"])
+264:         )
+265:     except Exception as e:
+266:         logger.exception("Error in get_metadata")
+267:         raise HTTPException(status_code=500, detail=str(e))
+268: 
+269: 
+270: @router.post("/api/build-renko", response_model=RenkoResponse)
+271: def build_renko(request: RenkoRequest):
+272:     diagnostics = []
+273:     diagnostics.append(f"Request: CSV={request.csv_path}, start={request.start_utc}, end={request.end_utc}")
+274:     diagnostics.append(f"Params: engine={request.processing_engine}, anchor={request.anchor}, pip_size={request.pip_size}, reversal={request.reversal_boxes}")
+275:     
+276:     try:
+277:         csv_path = resolve_csv_path(request.csv_path)
+278:         diagnostics.append(f"Resolved CSV path to: {csv_path}")
+279:         if not csv_path.exists() or not csv_path.is_file():
+280:             err_msg = f"CSV file not found: {request.csv_path}"
+281:             diagnostics.append(f"ERROR: {err_msg}")
+282:             return RenkoResponse(
+283:                 status="error",
+284:                 engine_used="",
+285:                 rows_scanned=0,
+286:                 ticks_loaded=0,
+287:                 charts={},
+288:                 diagnostics=diagnostics
+289:             )
+290:         
+291:         # 1. Parse start and end timestamps
+292:         try:
+293:             start_t = pd.Timestamp(request.start_utc)
+294:             end_t = pd.Timestamp(request.end_utc)
+295:             diagnostics.append(f"Parsed timestamps: start={start_t}, end={end_t}")
+296:         except Exception as te:
+297:             logger.warning(f"Timestamp parsing failed for request (start_utc={request.start_utc}, end_utc={request.end_utc}): {te}")
+298:             err_msg = f"Timestamp parsing failed: {te}"
+299:             diagnostics.append(f"ERROR: {err_msg}")
+300:             return RenkoResponse(
+301:                 status="error",
+302:                 engine_used="",
+303:                 rows_scanned=0,
+304:                 ticks_loaded=0,

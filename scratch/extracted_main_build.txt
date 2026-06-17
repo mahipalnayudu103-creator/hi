@@ -1,0 +1,383 @@
+=== Match at line 5 ===
+1: /**
+2:  * main.js — RenkoTerminal Dashboard Controller
+3:  *
+4:  * Uses the new job-based API:
+5:  *   POST /api/jobs/build-renko  → job_id
+6:  *   WS   /ws/jobs/{job_id}      → live progress
+7:  *   GET  /api/jobs/{job_id}/result → final bricks
+8:  *
+9:  * Local playback uses Web Worker + requestAnimationFrame (no setTimeout).
+10:  * WebSocket playback uses the backend WS loop.
+11:  */
+12: 
+13: "use strict";
+14: 
+15: function debounce(func, wait) {
+16:     let timeout;
+17:     return function(...args) {
+18:         const context = this;
+19:         clearTimeout(timeout);
+20:         timeout = setTimeout(() => func.apply(context, args), wait);
+21:     };
+22: }
+23: 
+24: // ─── Console redirect to UI terminal ─────────────────────────────────────────
+25: let consoleLogOutput;
+26: 
+27: function logToUI(message, type = "info") {
+28:     if (!consoleLogOutput) consoleLogOutput = document.getElementById("consoleLogOutput");
+29:     if (!consoleLogOutput) return;
+30:     const timeStr = new Date().toTimeString().slice(0, 8);
+31:     const line = document.createElement("div");
+32:     line.className = `log-line ${type}`;
+33:     const t = document.createElement("span");
+34:     t.className = "time";
+35:     t.textContent = `[${timeStr}]`;
+36:     line.appendChild(t);
+37:     line.appendChild(document.createTextNode(` ${message}`));
+38:     consoleLogOutput.appendChild(line);
+39:     // Keep only last 500 lines to prevent DOM bloat
+
+=== Match at line 242 ===
+222:         `;
+223:         grid.appendChild(wrapper);
+224: 
+225:         const chart = new RenkoCharts.RenkoChart(
+226:             `chartContainer${idx}`, `chartLegend${idx}`, `chartTitle${idx}`, idx, pip
+227:         );
+228:         chart.onBrickClickCallback = (brick) => handleBrickClick(brick, idx);
+229:         charts.push(chart);
+230:     });
+231: 
+232:     RenkoCharts.setupSync(charts);
+233:     RenkoCharts.setupCrosshairSync(charts);
+234:     setupChartHoverListeners();
+235:     setupCrosshairDetails();
+236: 
+237:     pipList = [...pips];
+238:     renderPipListUI();
+239:     updatePipListInput();
+240: 
+241:     if (statusText) {
+242:         statusText.textContent = `${count} chart${count !== 1 ? 's' : ''} configured. Build Renko Charts to load data.`;
+243:         statusText.className = 'value success';
+244:     }
+245:     console.log(`[CHARTS] Built ${count} chart panel${count !== 1 ? 's' : ''}: [${pips.join(', ')}] pip`);
+246:     checkCacheLookup();
+247: }
+248: 
+249: // ─── Web Worker + RAF ─────────────────────────────────────────────────────────
+250: let _worker      = null;
+251: let _workerReady = false;
+252: let _rafId       = null;
+253: let _pendingFrame = null;
+254: 
+255: function initWorker() {
+256:     if (_worker) { _worker.terminate(); _worker = null; }
+257:     _worker = new Worker("/static/js/playback.worker.js?v=30");
+258:     _workerReady = false;
+259: 
+260:     _worker.onmessage = (e) => {
+261:         const msg = e.data;
+262:         switch (msg.type) {
+263:             case "timeline_ready":
+264:                 _workerReady = true;
+265:                 console.log(`[Worker] Tick playback initialized. Ticks: ${msg.total_ticks.toLocaleString()}`);
+266:                 _worker.postMessage({ type: "start" });
+267:                 break;
+268:             case "frame":
+269:                 _pendingFrame = msg;
+270:                 if (!_rafId) scheduleRAF();
+271:                 statusText.textContent = `Playback: ${Number(msg.speed).toLocaleString()}× market time | Processed ticks: ${Number(msg.processed_ticks).toLocaleString()} / ${Number(msg.total_ticks).toLocaleString()} | Formed bricks: ${Number(msg.formed_bricks).toLocaleString()}`;
+272:                 statusText.className = "value success";
+273:                 updatePlaybackMetrics(msg);
+274:                 updateDebugPanel({ currentTickTime: msg.latest_time });
+275:                 break;
+276:             case "ended":
+
+=== Match at line 579 ===
+559:     }
+560:     if (info.currentTickTime) {
+561:         if (dbCurrentTickTime) dbCurrentTickTime.textContent = info.currentTickTime;
+562:     }
+563: }
+564: 
+565: function handleRangeChange() {
+566:     stopPlayback();
+567:     currentTicksData = null;
+568:     currentBricksData = null;
+569:     dataDirty = true;
+570:     if (!chartsLoaded) {
+571:         charts.forEach(c => c.clear());
+572:     }
+573:     if (_worker) {
+574:         _worker.terminate();
+575:         _worker = null;
+576:         _workerReady = false;
+577:     }
+578:     if (!chartsLoaded) {
+579:         statusText.textContent = "Range changed. Build Renko Charts again.";
+580:         statusText.className = "value warning";
+581:     }
+582:     // Debounce cache lookup so it doesn't fire on every slider tick
+583:     clearTimeout(handleRangeChange._cacheTimer);
+584:     handleRangeChange._cacheTimer = setTimeout(checkCacheLookup, 400);
+585:     
+586:     updateDebugPanel({
+587:         loadedFirstTick: "—",
+588:         loadedLastTick: "—",
+589:         loadedTickCount: 0,
+590:         currentTickTime: "—"
+591:     });
+592: }
+593: 
+594: // ─── Load CSV Metadata ────────────────────────────────────────────────────────
+595: async function onLoadMetadata() {
+596:     const csvPath = csvPathInput.value.trim();
+597:     if (!csvPath) { alert("Please enter a CSV file path."); return; }
+598: 
+599:     console.log("Loading metadata:", csvPath);
+600:     statusText.textContent = "Loading CSV metadata…";
+601:     statusText.className = "value warning";
+602: 
+603:     try {
+604:         metadata = await RenkoAPI.getMetadata(csvPath);
+605:         console.log("Metadata:", metadata);
+606: 
+607:         metadataInfoBoard.classList.remove("hidden");
+608:         metaRows.textContent  = metadata.rows_estimated.toLocaleString();
+609:         metaSize.textContent  = (metadata.size_bytes / 1_048_576).toFixed(2) + " MB";
+610:         metaStart.textContent = formatDate(new Date(metadata.file_start_utc));
+611:         metaEnd.textContent   = formatDate(new Date(metadata.file_end_utc));
+612:         metaDelim.textContent = `"${metadata.delimiter}"`;
+613:         metaPip.textContent   = metadata.detected_pip_size;
+
+=== Match at line 684 ===
+664:                 displayText = `${startStr} .. ${endStr}`;
+665:             } else {
+666:                 const startStr = startISO.replace("T", " ").replace(".000Z", " UTC");
+667:                 const endStr = endISO.replace("T", " ").replace(".000Z", " UTC");
+668:                 displayText = `${startStr} .. ${endStr}`;
+669:             }
+670:             selectedRangeText.textContent = displayText;
+671: 
+672:             // Update debug panel
+673:             updateDebugPanel();
+674: 
+675:             // Debounce cache lookup so it updates dynamically as the range changes
+676:             clearTimeout(dateRangeSlider._cacheTimer);
+677:             dateRangeSlider._cacheTimer = setTimeout(checkCacheLookup, 300);
+678:         });
+679: 
+680:         dateRangeSlider.noUiSlider.on("change", () => {
+681:             handleRangeChange();
+682:         });
+683: 
+684:         statusText.textContent = "Metadata loaded. Select range and Build Renko.";
+685:         statusText.className = "value success";
+686:         checkCacheLookup();
+687:     } catch (err) {
+688:         console.error("Metadata error:", err);
+689:         statusText.textContent = `Error: ${err.message}`;
+690:         statusText.className = "value warning";
+691:     }
+692: }
+693: 
+694: // ─── Cache lookup panel ───────────────────────────────────────────────────────
+695: let _lastCacheLookup = null; // {exact_match, sub_range_match, metadata, similar_matches}
+696: 
+697: async function checkCacheLookup() {
+698:     const panel = document.getElementById("cacheReuseCard");
+699:     if (!panel) return;
+700:     if (!metadata || !selectedStartUtc || !selectedEndUtc) {
+701:         panel.classList.add("hidden");
+702:         return;
+703:     }
+704:     const chartPips = getCurrentPips();
+705:     if (chartPips.length === 0) { panel.classList.add("hidden"); return; }
+706: 
+707:     try {
+708:         const resp = await fetch("/api/cache/lookup", {
+709:             method: "POST",
+710:             headers: { "Content-Type": "application/json" },
+711:             body: JSON.stringify({
+712:                 csv_path:       csvPathInput.value.trim(),
+713:                 start_utc:      selectedStartUtc,
+714:                 end_utc:        selectedEndUtc,
+715:                 price_source:   priceSourceSelect.value,
+716:                 reversal_boxes: parseInt(reversalBoxes.value),
+717:                 pip_size:       parseFloat(pipSize.value),
+718:                 anchor:         anchorModeSelect.value,
+
+=== Match at line 736 ===
+716:                 reversal_boxes: parseInt(reversalBoxes.value),
+717:                 pip_size:       parseFloat(pipSize.value),
+718:                 anchor:         anchorModeSelect.value,
+719:                 chart_pips:     chartPips,
+720:             }),
+721:         });
+722:         if (!resp.ok) return;
+723:         const data = await resp.json();
+724:         _lastCacheLookup = data;
+725:         renderCacheLookupPanel(data);
+726: 
+727:         if (data.exact_match || data.sub_range_match) {
+728:             if (chartsLoaded) {
+729:                 console.log("[AUTO-LOAD] Date range changed & cache match found. Auto-loading slice:", selectedStartUtc, "to", selectedEndUtc);
+730:                 _loadAndRenderResult(data.job_id, chartPips, selectedStartUtc, selectedEndUtc);
+731:             }
+732:         } else {
+733:             if (chartsLoaded) {
+734:                 charts.forEach(c => c.clear());
+735:                 chartsLoaded = false;
+736:                 statusText.textContent = "Range changed. Build Renko Charts again.";
+737:                 statusText.className = "value warning";
+738:             }
+739:         }
+740:     } catch (_) { /* network errors are silent */ }
+741: }
+742: 
+743: function renderCacheLookupPanel(data) {
+744:     const card = document.getElementById("cacheReuseCard");
+745:     if (!card) return;
+746: 
+747:     const titleEl = document.getElementById("cacheCardTitle");
+748:     const fileEl  = document.getElementById("cacheFileNameText");
+749:     const rangeEl = document.getElementById("cacheRangeText");
+750:     const pipsEl  = document.getElementById("cachePipsText");
+751:     const bricksEl = document.getElementById("cacheBricksText");
+752:     const builtEl = document.getElementById("cacheBuiltTimeText");
+753:     const simSec  = document.getElementById("similarCachePanel");
+754:     const simList = document.getElementById("similarCacheList");
+755: 
+756:     const hasMatch = data.exact_match || data.sub_range_match;
+757:     const meta = data.metadata;
+758:     const similar = data.similar_matches || [];
+759: 
+760:     if (hasMatch && meta) {
+761:         if (titleEl) {
+762:             titleEl.textContent = data.exact_match ? "💾 Previous Build Found" : "⚡ Cache Reuse Available";
+763:         }
+764:         
+765:         // Extract filename from csv_path
+766:         const csvPath = meta.csv_path || "";
+767:         const filename = csvPath.split(/[\\/]/).pop();
+768:         if (fileEl) fileEl.textContent = filename || "—";
+769: 
+770:         // Display range
+
+=== Match at line 835 ===
+815:         if (selRangeRow) selRangeRow.style.display = "none";
+816:     }
+817: 
+818:     if (similar.length > 0) {
+819:         if (simList) {
+820:             simList.innerHTML = similar.map((s, i) => {
+821:                 const pips = (s.chart_pips || []).join(", ");
+822:                 const range = `${(s.start_utc || "").slice(0,10)} → ${(s.end_utc || "").slice(0,10)}`;
+823:                 return `<li class="cache-similar-item" data-idx="${i}" style="cursor: pointer; padding: 4px 6px; margin-bottom: 4px; background: rgba(255,255,255,0.03); border-radius: 4px;">
+824:                     <span class="sim-pips" style="font-weight: 500; color: var(--text-highlight);">[${pips}]</span> ${range}
+825:                     <span style="float:right;opacity:0.6">${s.ticks_used?.toLocaleString() ?? "?"} ticks</span>
+826:                 </li>`;
+827:             }).join("");
+828:         }
+829:         if (simSec) simSec.classList.remove("hidden");
+830:     } else {
+831:         if (simSec) simSec.classList.add("hidden");
+832:     }
+833: }
+834: 
+835: // ─── Build Renko (Job-based) ──────────────────────────────────────────────────
+836: async function runBuildCharts() {
+837:     if (!metadata) { console.error("Load metadata first."); return; }
+838: 
+839:     stopPlayback();
+840: 
+841:     const chartPips = getCurrentPips();
+842:     const buildMode = document.getElementById("buildModeSelect")?.value || "full";
+843:     const isPreview = buildMode === "preview";
+844:     const isCacheOnly = buildMode === "cache_only";
+845:     const buildLabel = isPreview ? "preview build" : (isCacheOnly ? "cache-only build" : "build job");
+846: 
+847:     // Clear charts before starting a new build
+848:     if (!isCacheOnly) {
+849:         charts.forEach(c => c.clear());
+850:     }
+851: 
+852:     if (!selectedStartUtc || !selectedEndUtc) {
+853:         statusText.textContent = "Select date range first.";
+854:         statusText.className = "value error";
+855:         return;
+856:     }
+857: 
+858:     const params = {
+859:         csv_path:          csvPathInput.value.trim(),
+860:         start_utc:         selectedStartUtc,
+861:         end_utc:           selectedEndUtc,
+862:         price_source:      priceSourceSelect.value,
+863:         reversal_boxes:    parseInt(reversalBoxes.value),
+864:         pip_size:          parseFloat(pipSize.value),
+865:         anchor:            anchorModeSelect.value,
+866:         chart_pips:        chartPips,
+867:         processing_engine: processingEngineSelect.value,
+868:         chunk_size_mb:     parseInt(chunkSizeMb?.value || "64"),
+869:         build_mode:        buildMode,
+
+=== Match at line 889 ===
+869:         build_mode:        buildMode,
+870:         preview_ticks:     50000,
+871:         return_ticks:      !isCacheOnly,
+872:     };
+873: 
+874:     updateDebugPanel({
+875:         backendReqStart: selectedStartUtc,
+876:         backendReqEnd: selectedEndUtc
+877:     });
+878: 
+879:     console.log("Submitting build job:", params);
+880:     _buildRequestActive = true;
+881:     statusText.textContent = `Submitting ${buildLabel}...`;
+882:     statusText.className = "value warning";
+883:     updateProgress(0, null, null, null);
+884:     setPipelineStage("read");
+885:     progressLabel.textContent = `Submitting ${buildLabel}...`;
+886: 
+887:     let jobId;
+888:     try {
+889:         const resp = await RenkoAPI.submitBuildJob(params);
+890:         jobId = resp.job_id;
+891:         currentJobId = jobId;
+892:         if (consoleJobId) consoleJobId.textContent = `Job: ${jobId.slice(0, 8)}…`;
+893:         console.log(`Job submitted: ${jobId} (cache_hit=${resp.cache_hit})`);
+894: 
+895:         if (resp.cache_hit) {
+896:             _buildRequestActive = false;
+897:             if (isCacheOnly) {
+898:                 statusText.textContent = "Cache is already ready for this selection.";
+899:                 statusText.className = "value success";
+900:                 progressSection.classList.add("hidden");
+901:                 setPipelineStage(null);
+902:                 return;
+903:             }
+904:             
+905:             stagedCache = {
+906:                 jobId: jobId,
+907:                 chartPips: chartPips,
+908:                 startUtc: selectedStartUtc,
+909:                 endUtc: selectedEndUtc,
+910:                 metadata: resp.metadata || (_lastCacheLookup ? _lastCacheLookup.metadata : null)
+911:             };
+912: 
+913:             // Clear charts & update titles
+914:             charts.forEach((c, i) => {
+915:                 c.clear();
+916:                 c.setTitle(`Chart ${i + 1} (${chartPips[i]} Pip${chartPips[i] !== 1 ? "s" : ""}) [Staged]`);
+917:             });
+918:             chartsLoaded = false;
+919: 
+920:             // Update indicators
+921:             const meta = resp.metadata || (_lastCacheLookup ? _lastCacheLookup.metadata : null);
+922:             ticksLoadedText.textContent  = (meta?.ticks_used || 0).toLocaleString();
+923:             bricksBuiltText.textContent  = "Staged";
+

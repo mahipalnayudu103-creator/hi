@@ -12,16 +12,20 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
     <!-- noUiSlider CSS -->
-    <link rel="stylesheet" href="/libs/nouislider.min.css" />
+    <link rel="stylesheet" href="/static/css/nouislider.min.css" />
 
     <!-- Custom Stylesheet -->
-    <link rel="stylesheet" href="/src/styles.css?v=7" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=39" />
+    <link rel="stylesheet" href="/static/css/responsive.css?v=39" />
 
     <!-- TradingView Lightweight Charts -->
-    <script src="/libs/lightweight-charts.js"></script>
+    <script src="/static/js/lightweight-charts.js"></script>
+
+    <!-- MsgPack binary decoder (84% smaller WS frames) -->
+    <script src="/static/js/msgpack.min.js"></script>
 
     <!-- noUiSlider JS -->
-    <script src="/libs/nouislider.min.js"></script>
+    <script src="/static/js/nouislider.min.js"></script>
 
     <!-- Global Error Catcher -->
     <script>
@@ -31,14 +35,70 @@
             }
             const el = document.getElementById("statusText");
             if (el) { el.textContent = "JS Error: " + message; el.className = "value error"; }
+            
+            fetch('/api/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    level: 'error',
+                    message: String(message),
+                    url: String(source),
+                    line: lineno,
+                    column: colno,
+                    error: error ? (error.stack || error.toString()) : null
+                })
+            }).catch(e => {});
+
             return false;
+        };
+
+        window.onunhandledrejection = function(event) {
+            const reason = event.reason;
+            fetch('/api/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    level: 'unhandled_rejection',
+                    message: reason ? (reason.message || String(reason)) : 'Unhandled promise rejection',
+                    error: reason && reason.stack ? reason.stack : null
+                })
+            }).catch(e => {});
+        };
+
+        const originalConsoleError = console.error;
+        console.error = function(...args) {
+            originalConsoleError.apply(console, args);
+            const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+            fetch('/api/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    level: 'console_error',
+                    message: msg
+                })
+            }).catch(e => {});
+        };
+
+        const originalConsoleLog = console.log;
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, args);
+            const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+            fetch('/api/log', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    level: 'console_log',
+                    message: msg
+                })
+            }).catch(e => {});
         };
     </script>
 </head>
 <body class="dark-theme">
 <div class="app-container">
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-    <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════ -->
+    <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════ -->
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="logo-area">
@@ -52,19 +112,46 @@
 
             <!-- CSV Path -->
             <section class="sidebar-card">
-                <div class="card-header"><h2>CSV File Path</h2></div>
+                <div class="card-header"><h2>📂 Data Source</h2></div>
                 <div class="card-body">
                     <div class="form-group">
-                        <label for="csvPathInput">Direct Path</label>
+                        <label for="csvPathInput">CSV File Path</label>
                         <input type="text" id="csvPathInput" value="C:\cTraderData\EURUSD_Ticks_2026_Jun01_Jun07.csv" placeholder="C:/path/to/ticks.csv" class="form-control font-mono" />
                     </div>
                     <button id="loadMetadataBtn" class="btn btn-primary btn-block">Load CSV Metadata</button>
                 </div>
             </section>
 
+            <!-- Cache Reuse Panel -->
+            <section class="sidebar-card hidden" id="cacheReuseCard">
+                <div class="card-header"><h2 id="cacheCardTitle">💾 Previous Build Found</h2></div>
+                <div class="card-body">
+                    <div id="cacheDetailsPanel" class="selected-range-info">
+                        <div class="mb-2" style="margin-bottom: 6px;"><span class="label">File:</span> <span class="value" id="cacheFileNameText" style="word-break: break-all;">—</span></div>
+                        <div class="mb-2" style="margin-bottom: 6px;"><span class="label">Range:</span> <span class="value text-highlight" id="cacheRangeText" style="font-size: 0.85rem; font-weight: 500;">—</span></div>
+                        <div class="mb-2" id="cacheSelectedRangeRow" style="margin-bottom: 6px; display: none;"><span class="label">Selected Slice:</span> <span class="value" id="cacheSelectedRangeText" style="font-size: 0.85rem; font-weight: 500; color: #60a5fa;">—</span></div>
+                        <div class="mb-2" style="margin-bottom: 6px;"><span class="label">Pips:</span> <span class="value" id="cachePipsText">—</span></div>
+                        <div class="mb-2" style="margin-bottom: 6px;"><span class="label">Bricks:</span> <span class="value" id="cacheBricksText">—</span></div>
+                        <div class="mb-2" style="margin-bottom: 6px;"><span class="label">Built:</span> <span class="value" id="cacheBuiltTimeText">—</span></div>
+                    </div>
+                    <div class="btn-group mt-3" style="display: flex; gap: 8px; margin-top: 12px;">
+                        <button id="loadCacheBtn" class="btn btn-purple" style="flex: 1; padding: 8px 12px;">Load Cache</button>
+                        <button id="ignoreCacheBuildBtn" class="btn btn-layout" style="flex: 1; padding: 8px 12px;">Build Again</button>
+                    </div>
+                    
+                    <div id="similarCachePanel" class="mt-4 hidden" style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;">
+                        <h3 style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px;">Similar previous builds:</h3>
+                        <ul id="similarCacheList" class="similar-cache-list" style="list-style: none; padding: 0; margin: 0; font-size: 0.75rem; line-height: 1.5; color: var(--text-muted);">
+                            <!-- populated dynamically -->
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+
             <!-- Date Range -->
             <section class="sidebar-card hidden" id="rangeCard">
-                <div class="card-header"><h2>Date Range Slider</h2></div>
+                <div class="card-header"><h2>📅 Date Range</h2></div>
                 <div class="card-body">
                     <div id="dateRangeSlider" class="range-slider"></div>
                     <div class="selected-range-info mt-4">
@@ -84,84 +171,118 @@
 
             <!-- Renko Parameters -->
             <section class="sidebar-card">
-                <div class="card-header"><h2>Renko Parameters</h2></div>
-                <div class="card-body grid-col-2">
+                <div class="card-header"><h2>⚙️ Renko Parameters</h2></div>
+                <div class="card-body">
+
+                    <!-- ── Custom Renko Charts ─────────────────────────── -->
+                    <div class="param-label">Custom Renko Charts</div>
+
+                    <!-- Add single chart row -->
+                    <div class="pip-add-row">
+                        <input type="number" id="pipAddInput" value="5" step="0.1" min="0.1"
+                               class="form-control pip-add-input" placeholder="Pip size" />
+                        <button id="addChartBtn" class="btn btn-sm btn-blue">+ Add</button>
+                    </div>
+
+                    <!-- Pip list string input -->
+                    <div class="form-group" style="margin-top:0.35rem">
+                        <label for="pipListInput">Pip List</label>
+                        <input type="text" id="pipListInput" value="1,2,3,4" class="form-control"
+                               placeholder="e.g. 1,2,3,4 or 0.5,1,2,5,10" />
+                    </div>
+
+                    <!-- 3-button action row -->
+                    <div class="pip-action-grid">
+                        <button id="applyPipListBtn"    class="btn btn-sm btn-purple">✓ Apply</button>
+                        <button id="resetDefaultPipsBtn" class="btn btn-sm btn-outline-muted">↺ Default</button>
+                        <button id="removeAllPipsBtn"    class="btn btn-sm btn-danger-sm">✕ Clear</button>
+                    </div>
+
+                    <!-- Active charts list -->
+                    <div class="param-label" style="margin-top:0.5rem">
+                        Active Charts (<span id="activeChartCount">4</span>)
+                    </div>
+                    <div id="activePipList" class="active-pip-list"></div>
+
+                    <!-- ── Renko calculation settings ─────────────────── -->
+                    <div class="param-label" style="margin-top:0.6rem">Calculation Settings</div>
+
+                    <!-- Two-column row: Price Source + Reversal -->
+                    <div class="param-row-2">
+                        <div class="form-group">
+                            <label for="priceSourceSelect">Price Source</label>
+                            <select id="priceSourceSelect" class="form-control">
+                                <option value="Bid">Bid</option>
+                                <option value="Ask">Ask</option>
+                                <option value="Mid">Mid</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="reversalBoxes">Reversal</label>
+                            <input type="number" id="reversalBoxes" value="2" min="1" class="form-control" />
+                        </div>
+                    </div>
+
+                    <!-- Two-column row: Pip Size + Anchor Mode -->
+                    <div class="param-row-2">
+                        <div class="form-group">
+                            <label for="pipSize">Pip Size</label>
+                            <input type="number" id="pipSize" value="0.0001" step="0.00001" class="form-control" />
+                        </div>
+                        <div class="form-group">
+                            <label for="anchorModeSelect">Anchor</label>
+                            <select id="anchorModeSelect" class="form-control">
+                                <option value="floor">Floor</option>
+                                <option value="round">Round</option>
+                                <option value="first">First</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Chunk size full width -->
                     <div class="form-group">
-                        <label for="chart1Pips">Chart 1 Pips</label>
-                        <input type="number" id="chart1Pips" value="1" step="0.1" class="form-control" />
-                    </div>
-                    <div class="form-group">
-                        <label for="chart2Pips">Chart 2 Pips</label>
-                        <input type="number" id="chart2Pips" value="2" step="0.1" class="form-control" />
-                    </div>
-                    <div class="form-group">
-                        <label for="chart3Pips">Chart 3 Pips</label>
-                        <input type="number" id="chart3Pips" value="3" step="0.1" class="form-control" />
-                    </div>
-                    <div class="form-group">
-                        <label for="chart4Pips">Chart 4 Pips</label>
-                        <input type="number" id="chart4Pips" value="4" step="0.1" class="form-control" />
-                    </div>
-                    <div class="form-group span-2">
-                        <label for="priceSourceSelect">Price Source</label>
-                        <select id="priceSourceSelect" class="form-control">
-                            <option value="Bid">Bid</option>
-                            <option value="Ask">Ask</option>
-                            <option value="Mid">Mid (Bid+Ask)/2</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="reversalBoxes">Reversal Boxes</label>
-                        <input type="number" id="reversalBoxes" value="2" min="1" class="form-control" />
-                    </div>
-                    <div class="form-group">
-                        <label for="pipSize">Pip Size</label>
-                        <input type="number" id="pipSize" value="0.0001" step="0.00001" class="form-control" />
-                    </div>
-                    <div class="form-group span-2">
-                        <label for="anchorModeSelect">Anchor Mode</label>
-                        <select id="anchorModeSelect" class="form-control">
-                            <option value="floor">Floor</option>
-                            <option value="round">Round</option>
-                            <option value="first">First</option>
-                        </select>
-                    </div>
-                    <div class="form-group span-2">
                         <label for="chunkSizeMb">Chunk Size (MB)</label>
                         <input type="number" id="chunkSizeMb" value="64" min="8" max="512" step="8" class="form-control" />
                     </div>
-                    <button id="buildRenkoBtn" class="btn btn-purple btn-block span-2 mt-2">🔨 Build Renko Charts</button>
+
+
+
+                    <button id="buildRenkoBtn" class="btn btn-purple btn-block mt-2">🔨 Build Renko Charts</button>
                 </div>
             </section>
 
             <!-- Playback Controller -->
             <section class="sidebar-card">
-                <div class="card-header"><h2>Playback Loop</h2></div>
+                <div class="card-header"><h2>▶ Playback Loop</h2></div>
                 <div class="card-body">
                     <div class="playback-controls">
                         <button id="playBtn" class="btn-icon" title="Play">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                         </button>
                         <button id="pauseBtn" class="btn-icon" title="Pause">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
                         </button>
                         <button id="stepBtn" class="btn-icon" title="Step">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
                         </button>
                         <button id="resetBtn" class="btn-icon" title="Reset">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><polyline points="3 3 3 8 8 8"></polyline></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><polyline points="3 3 3 8 8 8"></polyline></svg>
                         </button>
                     </div>
 
-                    <div class="form-group mt-3">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <label for="playbackSpeed" style="margin-bottom: 0;">Playback Speed (Ticks/Sec)</label>
-                            <span id="playbackSpeedValue" class="badge" style="background: var(--purple-color); padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 0.75rem;">100/s</span>
+                    <!-- Speed slider -->
+                    <div class="speed-row">
+                        <div class="speed-labels">
+                            <span class="speed-label-text">Speed (Market Time)</span>
+                            <span id="playbackSpeedValue" class="speed-badge">100×</span>
                         </div>
-                        <input type="range" id="playbackSpeed" min="0" max="15" step="1" value="9" class="form-control" style="width: 100%; height: 6px; border-radius: 3px; accent-color: var(--purple-color); margin-top: 0.5rem; cursor: pointer; padding: 0;" />
+                        <input type="range" id="playbackSpeed" min="0" max="100" step="1" value="40" class="speed-slider" />
+                        <div class="speed-ticks">
+                            <span>1×</span><span>10×</span><span>100×</span><span>1k×</span><span>10k×</span><span>100k×</span>
+                        </div>
                     </div>
 
-                    <div class="form-group mt-3">
+                    <div class="form-group">
                         <label for="playbackMode">Playback Mode</label>
                         <select id="playbackMode" class="form-control">
                             <option value="websocket">Backend WebSocket Loop</option>
@@ -169,78 +290,20 @@
                         </select>
                     </div>
 
-                    <div class="form-group mt-3" style="display: flex; align-items: center; justify-content: space-between;">
-                        <label for="syncChartsCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">Synchronize Charts</label>
-                        <input type="checkbox" id="syncChartsCheckbox" checked style="width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--purple-color);" />
+                    <div class="toggle-row">
+                        <label for="syncChartsCheckbox">Synchronize Charts</label>
+                        <input type="checkbox" id="syncChartsCheckbox" class="toggle-check" />
                     </div>
-                </div>
-            </section>
-
-            <!-- Layout & Themes -->
-            <section class="sidebar-card">
-                <div class="card-header"><h2>Layout & Themes</h2></div>
-                <div class="card-body">
-                    <div class="form-group">
-                        <label>Layout Grid Mode</label>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
-                            <button id="layout2x2Btn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">2x2 Grid</button>
-                            <button id="layoutStackBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Vertical Stack</button>
-                            <button id="layoutFocusBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Focus Active</button>
-                            <button id="layoutRestoreBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Restore</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="themeSwitcher">Theme Style</label>
-                        <select id="themeSwitcher" class="form-control">
-                            <option value="dark-theme" selected>Default Dark</option>
-                            <option value="light-theme">Light Mode</option>
-                            <option value="tradingview-dark">TradingView Dark</option>
-                            <option value="ctrader-dark">cTrader Dark</option>
-                        </select>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Jump & Step Controls -->
-            <section class="sidebar-card">
-                <div class="card-header"><h2>Jump & Step</h2></div>
-                <div class="card-body">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
-                        <button id="jumpStartBtn" class="btn btn-purple" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">⏮️ Jump Start</button>
-                        <button id="jumpEndBtn" class="btn btn-purple" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">⏭️ Jump End</button>
-                    </div>
-                    <div class="form-group mt-2">
-                        <label for="jumpTimeInput">Jump to UTC Time</label>
-                        <div style="display: flex; gap: 0.25rem;">
-                            <input type="text" id="jumpTimeInput" placeholder="YYYY-MM-DD HH:MM:SS" class="form-control font-mono" style="flex: 1; font-size: 0.75rem; padding: 0.35rem 0.5rem;" />
-                            <button id="jumpTimeBtn" class="btn btn-primary" style="padding: 0.35rem 0.6rem; font-size: 0.75rem;">Go</button>
-                        </div>
-                    </div>
-                    <div class="form-group mt-2">
-                        <label>Ticks Step Controls</label>
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.2rem;">
-                            <button id="step1Btn" class="btn btn-icon" title="Step 1 Tick" style="font-size: 0.7rem; padding: 0.35rem 0;">+1</button>
-                            <button id="step10Btn" class="btn btn-icon" title="Step 10 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+10</button>
-                            <button id="step100Btn" class="btn btn-icon" title="Step 100 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+100</button>
-                            <button id="step1000Btn" class="btn btn-icon" title="Step 1000 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">+1k</button>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.2rem; margin-top: 0.2rem;">
-                            <button id="stepBack1Btn" class="btn btn-icon" title="Step Back 1 Tick" style="font-size: 0.7rem; padding: 0.35rem 0;">-1</button>
-                            <button id="stepBack10Btn" class="btn btn-icon" title="Step Back 10 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-10</button>
-                            <button id="stepBack100Btn" class="btn btn-icon" title="Step Back 100 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-100</button>
-                            <button id="stepBack1000Btn" class="btn btn-icon" title="Step Back 1000 Ticks" style="font-size: 0.7rem; padding: 0.35rem 0;">-1k</button>
-                        </div>
-                    </div>
-                    <div class="form-group mt-2" style="display: flex; align-items: center; justify-content: space-between;">
-                        <label for="autoScrollCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Auto-scroll to latest</label>
-                        <input type="checkbox" id="autoScrollCheckbox" checked style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
+                    <div class="toggle-row">
+                        <label for="autoScrollCheckbox">Auto-scroll to latest</label>
+                        <input type="checkbox" id="autoScrollCheckbox" class="toggle-check" />
                     </div>
                 </div>
             </section>
 
             <!-- Chart & Build Modes -->
             <section class="sidebar-card">
-                <div class="card-header"><h2>Chart & Build Modes</h2></div>
+                <div class="card-header"><h2>📊 Chart & Build</h2></div>
                 <div class="card-body">
                     <div class="form-group">
                         <label for="buildModeSelect">Build Mode</label>
@@ -257,14 +320,6 @@
                             <option value="confirmed">Confirmed Bricks Only</option>
                         </select>
                     </div>
-                    <div class="form-group mt-2" style="display: flex; align-items: center; justify-content: space-between;">
-                        <label for="dateSeparatorsCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Show Date Separators</label>
-                        <input type="checkbox" id="dateSeparatorsCheckbox" style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
-                    </div>
-                    <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
-                        <label for="reversalMarkersCheckbox" style="margin-bottom: 0; cursor: pointer; font-size: 0.8rem; color: var(--text-secondary);">Reversal Markers</label>
-                        <input type="checkbox" id="reversalMarkersCheckbox" checked style="width: 14px; height: 14px; margin: 0; cursor: pointer;" />
-                    </div>
                     <div class="form-group">
                         <label for="precisionOverride">Precision Override</label>
                         <select id="precisionOverride" class="form-control">
@@ -274,25 +329,72 @@
                             <option value="5">5 decimals (EUR, GBP)</option>
                         </select>
                     </div>
+                    <div class="toggle-row">
+                        <label for="dateSeparatorsCheckbox">Show Date Separators</label>
+                        <input type="checkbox" id="dateSeparatorsCheckbox" class="toggle-check" />
+                    </div>
+                    <div class="toggle-row">
+                        <label for="reversalMarkersCheckbox">Reversal Markers</label>
+                        <input type="checkbox" id="reversalMarkersCheckbox" checked class="toggle-check" />
+                    </div>
+
+                    <div id="dynamicIndicatorToggles"></div>
+
+                </div>
+            </section>
+
+            <!-- Layout & Themes -->
+            <section class="sidebar-card">
+                <div class="card-header"><h2>🎨 Layout & Theme</h2></div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label>Layout Grid</label>
+                        <div class="layout-btn-grid">
+                            <button id="layout2x2Btn" class="btn btn-layout">⊞ 2×2</button>
+                            <button id="layoutStackBtn" class="btn btn-layout">☰ Stack</button>
+                            <button id="layoutFocusBtn" class="btn btn-layout">⛶ Focus</button>
+                            <button id="layoutRestoreBtn" class="btn btn-layout">↺ Restore</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Chart Sync</label>
+                        <div class="sync-btn-row">
+                            <button id="syncZoomBtn" class="btn btn-sync" title="Sync zoom/pan across all charts">
+                                ↺ Sync Zoom
+                            </button>
+                            <button id="syncCrosshairBtn" class="btn btn-sync active" title="Sync crosshair position across all charts">
+                                ✛ Sync Crosshair
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="themeSwitcher">Theme</label>
+                        <select id="themeSwitcher" class="form-control">
+                            <option value="dark-theme" selected>Default Dark</option>
+                            <option value="light-theme">Light Mode</option>
+                            <option value="tradingview-dark">TradingView Dark</option>
+                            <option value="ctrader-dark">cTrader Dark</option>
+                        </select>
+                    </div>
                 </div>
             </section>
 
             <!-- Cache & Export -->
             <section class="sidebar-card">
-                <div class="card-header"><h2>Cache & Export</h2></div>
+                <div class="card-header"><h2>💾 Cache & Export</h2></div>
                 <div class="card-body">
-                    <button id="clearCacheBtn" class="btn btn-purple btn-block" style="font-size: 0.75rem; padding: 0.4rem 0.8rem;">🧹 Clear Backend Cache</button>
-                    <div class="form-group mt-2">
-                        <label>Export Tools</label>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
-                            <button id="exportPngBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Export PNG</button>
-                            <button id="exportCsvBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem;">Export CSV</button>
-                            <button id="exportSettingsBtn" class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.5rem; grid-column: span 2;">Export Preset JSON</button>
+                    <button id="clearCacheBtn" class="btn btn-purple btn-block">🧹 Clear Backend Cache</button>
+                    <div class="form-group">
+                        <label>Export</label>
+                        <div class="export-btn-grid">
+                            <button id="exportPngBtn" class="btn btn-export">🖼️ PNG</button>
+                            <button id="exportCsvBtn" class="btn btn-export">📄 CSV</button>
+                            <button id="exportSettingsBtn" class="btn btn-export btn-export-wide">📦 Export Preset JSON</button>
                         </div>
                     </div>
-                    <div class="form-group mt-2">
+                    <div class="form-group">
                         <label for="presetImportFile">Import Preset</label>
-                        <input type="file" id="presetImportFile" class="form-control" style="font-size: 0.7rem; padding: 0.25rem 0.5rem;" accept=".json" />
+                        <input type="file" id="presetImportFile" class="form-control file-input" accept=".json" />
                     </div>
                 </div>
             </section>
@@ -300,11 +402,18 @@
         </div><!-- /sidebar-scroll -->
     </aside>
 
-    <!-- ═══ MAIN DASHBOARD ═════════════════════════════════════════════════ -->
+    <!-- ═══ MAIN DASHBOARD ═════════════════════════════════════════════════ -->
     <main class="dashboard-viewport">
 
         <!-- Top Status Panel -->
         <header class="status-panel">
+            <button id="toggleSidebarBtn" class="btn-toggle-sidebar" title="Toggle Left Sidebar">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
             <div class="status-item">
                 <span class="label">Status:</span>
                 <span id="statusText" class="value warning">Waiting for CSV…</span>
@@ -329,7 +438,7 @@
             </div>
         </header>
 
-        <!-- ═══ CPU/GPU MONITOR BAR ════════════════════════════════════════ -->
+        <!-- ═══ CPU/GPU MONITOR BAR ════════════════════════════════════════ -->
         <div class="monitor-bar" id="monitorBar">
             <!-- CPU -->
             <div class="monitor-card" id="cpuCard">
@@ -381,7 +490,7 @@
                 <div class="pipeline-stages">
                     <div class="pipe-stage" id="pipeRead">📂 Read</div>
                     <div class="pipe-arrow">→</div>
-                    <div class="pipe-stage" id="pipeProc">⚙️ Process</div>
+                    <div class="pipe-stage" id="pipeProc">⚙️ Process</div>
                     <div class="pipe-arrow">→</div>
                     <div class="pipe-stage" id="pipeRenko">📊 Renko</div>
                     <div class="pipe-arrow">→</div>
@@ -419,42 +528,13 @@
             </div>
         </div>
 
-        <!-- Charts Grid (2×2) -->
-        <div class="charts-grid" id="chartsGrid">
-            <div class="chart-wrapper" id="chartWrapper1" data-index="1">
-                <div class="chart-title-bar">
-                    <span class="title" id="chart1Title">Chart 1 (1.0 Pip)</span>
-                    <span class="legend" id="chart1Legend">O: — H: — L: — C: —</span>
-                </div>
-                <div id="chart1Container" class="chart-container"></div>
-            </div>
-            <div class="chart-wrapper" id="chartWrapper2" data-index="2">
-                <div class="chart-title-bar">
-                    <span class="title" id="chart2Title">Chart 2 (2.0 Pips)</span>
-                    <span class="legend" id="chart2Legend">O: — H: — L: — C: —</span>
-                </div>
-                <div id="chart2Container" class="chart-container"></div>
-            </div>
-            <div class="chart-wrapper" id="chartWrapper3" data-index="3">
-                <div class="chart-title-bar">
-                    <span class="title" id="chart3Title">Chart 3 (3.0 Pips)</span>
-                    <span class="legend" id="chart3Legend">O: — H: — L: — C: —</span>
-                </div>
-                <div id="chart3Container" class="chart-container"></div>
-            </div>
-            <div class="chart-wrapper" id="chartWrapper4" data-index="4">
-                <div class="chart-title-bar">
-                    <span class="title" id="chart4Title">Chart 4 (4.0 Pips)</span>
-                    <span class="legend" id="chart4Legend">O: — H: — L: — C: —</span>
-                </div>
-                <div id="chart4Container" class="chart-container"></div>
-            </div>
-        </div>
+        <!-- Charts Grid (dynamic — populated by buildChartUI in main.js) -->
+        <div class="charts-grid" id="chartsGrid" style="grid-template-columns: repeat(2, minmax(0, 1fr))"></div>
 
         <!-- Live Terminal Console -->
         <footer class="system-console">
             <div class="console-header">
-                <span class="console-title">🖥️ LIVE TERMINAL CONSOLE</span>
+                <span class="console-title">🖥️ LIVE TERMINAL CONSOLE</span>
                 <div class="console-actions">
                     <span id="consoleJobId" class="console-job-id"></span>
                     <button id="clearConsoleBtn" class="btn-clear-console">Clear</button>
@@ -470,7 +550,7 @@
     <aside class="sidebar-right" id="sidebarRight">
         <div class="sidebar-right-header">
             <h2>📈 Data & Metrics</h2>
-            <button id="toggleRightSidebarBtn" class="btn-toggle-right" title="Toggle Sidebar">➡️</button>
+            <button id="toggleRightSidebarBtn" class="btn-toggle-right" title="Toggle Sidebar">➡️</button>
         </div>
         <div class="sidebar-right-scroll">
             
@@ -486,7 +566,7 @@
             <!-- Linked Cursor Data Panel -->
             <section class="right-card">
                 <div class="card-header">Cursor Data Window</div>
-                <div class="data-grid">
+                <div class="data-grid" id="cursorDataGrid">
                     <div class="data-row"><span class="label">Active Chart</span><span class="val" id="cursorChart">—</span></div>
                     <div class="data-row"><span class="label">Brick Index</span><span class="val" id="cursorIndex">—</span></div>
                     <div class="data-row"><span class="label">Confirm Time (UTC)</span><span class="val font-mono" id="cursorTime" style="font-size: 0.75rem;">—</span></div>
@@ -499,6 +579,7 @@
                     <div class="data-row"><span class="label">Brick Size</span><span class="val" id="cursorBrickSize">—</span></div>
                     <div class="data-row"><span class="label">Price Source</span><span class="val" id="cursorSource">—</span></div>
                     <div class="data-row"><span class="label">Spread (Pips)</span><span class="val" id="cursorSpread">—</span></div>
+
                 </div>
             </section>
 
@@ -555,8 +636,12 @@
 </div>
 
 <!-- Scripts -->
-<script src="/src/api.js?v=7"></script>
-<script src="/src/charts.js?v=7"></script>
-<script src="/src/main.js?v=7"></script>
+<script src="/static/js/api.js?v=39"></script>
+<script src="/static/js/charts.js?v=39"></script>
+<script src="/static/js/ui.js?v=39"></script>
+<script src="/static/js/cache.js?v=39"></script>
+<script src="/static/js/build.js?v=39"></script>
+<script src="/static/js/playback.js?v=39"></script>
+<script src="/static/js/main.js?v=39"></script>
 </body>
 </html>
